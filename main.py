@@ -120,9 +120,8 @@ def process(url: str) -> None:
                 return
 
             domians = batch_call(tasks.get("scripts", {}))
-            # exists sites
-            texts, candidates = fetct_exist(tasks.get("persists"), pushtool)
-            domians.extend(texts)
+            # exist domains
+            candidates = fetct_exist(tasks.get("persists"), pushtool)
 
             data = batch_probe(
                 domains=domians,
@@ -181,25 +180,28 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
     return {"threshold": threshold, "scripts": tasks, "persists": groups}
 
 
-def fetct_exist(persists: dict, pushtool: push.PushTo) -> tuple[list, dict]:
+def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
     if not persists or not pushtool:
-        return [], {}
+        return {}
 
-    sites, candidates = [], {}
+    candidates = {}
     for k, v in persists.items():
         content = utils.http_get(url=pushtool.raw_url(v))
         if not content:
             continue
         if k != "candidates":
-            sites.extend([x for x in content.split(",") if not utils.isblank(x)])
+            for site in content.split(","):
+                if not utils.isblank(site):
+                    candidates[site] = {"category": k}
+
             continue
 
         try:
-            candidates = json.loads(content)
+            candidates.update(json.loads(content))
         except:
             logger.error("[CandidatesError] fetch candidates failed")
 
-    return sites, candidates
+    return candidates
 
 
 def batch_probe(
@@ -260,6 +262,7 @@ def check(
     chatgptnextweb: bool = True,
 ) -> None:
     try:
+        domain = utils.extract_domain(url=domain, include_protocal=True)
         status, category = judge(
             domain=domain, chatgptweb=chatgptweb, chatgptnextweb=chatgptnextweb
         )
