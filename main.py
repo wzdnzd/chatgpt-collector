@@ -6,14 +6,55 @@ import os
 import re
 import time
 import traceback
+from enum import Enum
 from http.client import HTTPResponse
 from multiprocessing.managers import DictProxy, ListProxy
 from multiprocessing.synchronize import Semaphore
+from urllib import parse
 
 import push
 import utils
 from logger import logger
 from urlvalidator import isurl
+
+
+class GPTProvider(Enum):
+    AZURE = 1
+    CHATGPT = 2
+    OPENAI = 3
+    UNKNOWN = 4
+
+
+COMMON_PATH_MODE = {
+    "/api/chat-process": GPTProvider.OPENAI,
+    "/api/chat-stream": GPTProvider.AZURE,
+    "/api/chat": GPTProvider.OPENAI,
+    "/api": GPTProvider.OPENAI,
+}
+
+COMMON_PAYLOAD = {
+    GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
+    GPTProvider.CHATGPT: {},
+    GPTProvider.OPENAI: {
+        "messages": [{"role": "user", "content": "What is ChatGPT?"}],
+        "stream": True,
+        "model": "gpt-3.5-turbo",
+        "temperature": 1,
+        "presence_penalty": 0,
+    },
+}
+
+HEADERS = {"Content-Type": "application/json", "path": "v1/chat/completions"}
+
+
+def query_provider(name: str) -> GPTProvider:
+    if not name:
+        return GPTProvider.UNKNOWN
+    for item in GPTProvider:
+        if name.upper() == item.name:
+            return item
+
+    return GPTProvider.UNKNOWN
 
 
 def execute_script(script: str, params: dict = {}) -> list[str]:
@@ -119,16 +160,12 @@ def process(url: str) -> None:
                 logger.warning("[ConfigWarn] no valid crawler task found")
                 return
 
-            domians = batch_call(tasks.get("scripts", {}))
-            # exist domains
+            urls = batch_call(tasks.get("scripts", {}))
+            # exist urls
             candidates = fetct_exist(tasks.get("persists"), pushtool)
 
             data = batch_probe(
-                domains=domians,
-                candidates=candidates,
-                threshold=tasks.get("threshold"),
-                chatgptweb="chatgptweb" in tasks.get("persists"),
-                chatgptnextweb="chatgptnextweb" in tasks.get("persists"),
+                urls=urls, candidates=candidates, threshold=tasks.get("threshold")
             )
             if not data:
                 logger.warning("[ProcessWarn] cannot found any domains")
@@ -171,9 +208,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
         if pushtool.validate(v):
             groups[k] = v
 
-    if "candidates" not in groups or (
-        "chatgptweb" not in groups and "chatgptnextweb" not in groups
-    ):
+    if "candidates" not in groups or "availables" not in groups:
         return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
@@ -192,7 +227,7 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
         if k != "candidates":
             for site in content.split(","):
                 if not utils.isblank(site):
-                    candidates[site] = {"category": k}
+                    candidates[site] = {"defeat": 0}
 
             continue
 
@@ -204,38 +239,44 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
     return candidates
 
 
-def batch_probe(
-    domains: list[str],
-    candidates: dict,
-    threshold: int,
-    chatgptweb: bool = True,
-    chatgptnextweb: bool = True,
-) -> dict:
-    if (not domains and not candidates) or (not chatgptweb and not chatgptnextweb):
+def deduplicate(sites: list[str]) -> list[str]:
+    if not sites:
+        return []
+
+    dataset = {}
+    for site in sites:
+        hostname = parse.urlparse(url=site).netloc
+        url = dataset.get(hostname, "")
+        if not url or len(url) < len(site):
+            dataset[hostname] = site
+
+    return list(dataset.values())
+
+
+def batch_probe(urls: list[str], candidates: dict, threshold: int) -> dict:
+    if not urls and not candidates:
         return {}
 
-    domains = domains if domains is not None else []
+    urls = urls if urls is not None else []
     candidates = candidates if candidates is not None else {}
-    domains.extend(candidates.keys())
-    sites = list(set(domains))
-    logger.info(f"[ProbeSites] {len(sites)} sites: {sites}")
+    urls.extend(candidates.keys())
+    sites = deduplicate(sites=urls)
+    logger.info(f"[ProbeSites] starting probe count: {len(sites)} sites: {sites}")
 
     with multiprocessing.Manager() as manager:
-        collections, potentials, processes = manager.dict(), manager.dict(), []
-        semaphore = multiprocessing.Semaphore(max(50, 1))
-        for domain in sites:
+        collections, potentials, processes = manager.list(), manager.dict(), []
+        semaphore, starttime = multiprocessing.Semaphore(max(50, 1)), time.time()
+        for site in sites:
             semaphore.acquire()
             p = multiprocessing.Process(
                 target=check,
                 args=(
-                    domain,
+                    site,
                     candidates,
                     threshold,
                     collections,
                     potentials,
                     semaphore,
-                    chatgptweb,
-                    chatgptnextweb,
                 ),
             )
             p.start()
@@ -243,106 +284,141 @@ def batch_probe(
         for p in processes:
             p.join()
 
-        data = {"candidates": json.dumps(dict(potentials))}
-        for k, v in collections.items():
-            logger.info(f"[ProbeInfo] category: {k} count: {len(v)} sites: {v}")
-            data[k] = ",".join(v)
-
+        availables = list(collections)
+        cost = "{:.3}s".format(time.time() - starttime)
+        logger.info(
+            f"[ProbeInfo] collect finished, cost: {cost} count: {len(availables)} sites: {availables}"
+        )
+        data = {
+            "availables": ",".join(availables),
+            "candidates": json.dumps(dict(potentials)),
+        }
         return data
 
 
 def check(
-    domain: str,
+    url: str,
     candidates: dict,
     threshold: int,
-    availables: DictProxy,
+    availables: ListProxy,
     potentials: DictProxy,
     semaphore: Semaphore,
-    chatgptweb: bool = True,
-    chatgptnextweb: bool = True,
 ) -> None:
     try:
-        domain = utils.extract_domain(url=domain, include_protocal=True)
-        status, category = judge(
-            domain=domain, chatgptweb=chatgptweb, chatgptnextweb=chatgptnextweb
-        )
+        status, apipath = judge(url=url, retry=2)
         # reachable
         if status:
-            keys = category.lower()
-            sites = availables.get(keys, [])
-            sites.append(domain)
-            availables[keys] = sites
+            availables.append(apipath)
             return
 
-        # invalid domain if category is empty
-        if category == "" or domain not in candidates:
+        if url not in candidates:
             return
 
-        defeat = candidates.get(domain).get("defeat", 0) + 1
+        defeat = candidates.get(url).get("defeat", 0) + 1
         if defeat > threshold:
             return
 
-        potentials[domain] = {"defeat": defeat, "category": category}
+        potentials[url] = {"defeat": defeat}
     finally:
         if semaphore is not None:
             semaphore.release()
 
 
-def judge(
-    domain: str, retry: int = 2, chatgptweb: bool = True, chatgptnextweb: bool = True
-) -> tuple[bool, str]:
+def parse_url(url: str) -> tuple[bool, str, GPTProvider]:
+    if not isurl(url):
+        return False, "", GPTProvider.UNKNOWN
+
+    result = parse.urlparse(url=url)
+    full, mode = result.path and result.path != "/", GPTProvider.UNKNOWN
+    apipath = f"{result.scheme}://{result.netloc}"
+    if full:
+        apipath = f"{apipath}{result.path}"
+        mode = COMMON_PATH_MODE.get(result.path, mode)
+
+    if result.query:
+        params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
+        provider = query_provider(params.get("mode", ""))
+        mode = provider if provider != GPTProvider.UNKNOWN else mode
+
+    return full, apipath, mode
+
+
+def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
+    full, apipath, mode = parse_url(url=url)
+    if not apipath:
+        return []
+
+    flag = mode != GPTProvider.UNKNOWN
+    if full:
+        if flag:
+            return [(apipath, mode)]
+        else:
+            return [(apipath, x) for x in COMMON_PAYLOAD.keys()]
+    if flag:
+        return [(f"{apipath}{x}", mode) for x in COMMON_PATH_MODE.keys()]
+
+    return [
+        (f"{apipath}{x}", y)
+        for x in COMMON_PATH_MODE.keys()
+        for y in COMMON_PAYLOAD.keys()
+    ]
+
+
+def judge(url: str, retry: int = 2) -> tuple[bool, str]:
     """
-    Judge whether the website is ChatGPTWeb, ChatGPTNextWeb or neither of them
+    Judge whether the website is valid and sniff api path
     """
-    if not isurl(domain):
+    tasks = generate_tasks(url=url)
+    if not tasks:
         return False, ""
 
-    try:
-        # TODO check /api/config for ChatGPTWeb and /api/openai?_vercel_no_cache=1 for ChatGPTNextWeb
-        # Reference: https://github.com/Chanzhaoyu/chatgpt-web/blob/main/service/src/index.ts#L48
-        # Reference: https://github.com/Yidadaa/ChatGPT-Next-Web/blob/main/app/requests.ts#L51
+    for apipath, mode in tasks:
+        body = COMMON_PAYLOAD.get(mode)
+        link = f"{apipath}?mode={mode.name.lower()}"
+        if not body:
+            continue
+        try:
+            response = utils.http_post(
+                url=apipath, headers=HEADERS, params=body, retry=retry
+            )
 
-        # check with ChatGPTWeb mode
-        if chatgptweb:
-            body = {"prompt": "What is ChatGPT?", "options": {}}
-            url = f"{domain}/api/chat-process"
-            response = utils.http_post(url=url, params=body, retry=retry)
-            if response and response.getcode() == 200:
-                content = response.read().decode("UTF8")
-                avaiable = r'"id":' in content
-                return avaiable, "ChatGPTWeb"
+            if not response or response.getcode() != 200:
+                continue
 
-        # check with ChatGPTNextWeb mode
-        if chatgptnextweb:
-            headers = {
-                "Content-Type": "application/json",
-                "path": "v1/chat/completions",
-            }
-            url = f"{domain}/api/chat-stream"
-            body = {
-                "messages": [{"role": "user", "content": "What is ChatGPT?"}],
-                "stream": False,
-                "model": "gpt-3.5-turbo",
-                "temperature": 1,
-                "presence_penalty": 0,
-            }
+            content_type = response.headers.get("content-type", "")
+            if not content_type or "text/plain" in content_type:
+                return True, link
 
-            response = utils.http_post(url=url, headers=headers, params=body, retry=2)
-            avaiable = response and response.getcode() == 200
-            return avaiable, "ChatGPTNextWeb"
+            content = response.read().decode("UTF8")
+            if not content:
+                continue
+            try:
+                index = content.rfind("\n", 0, len(content) - 2)
+                text = content if index < 0 else content[index + 1 :]
+                data = json.loads(text)
+                if data.get("id", ""):
+                    return True, link
+            except:
+                if not re.search(
+                    r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"', content
+                ):
+                    return True, link
+                else:
+                    logger.error(
+                        f"[JudgeError] url: {apipath} mode: {mode.name} message: {content}"
+                    )
+        except Exception as e:
+            logger.error(
+                f"[JudgeError] url: {apipath} mode: {mode.name} message: {str(e)}"
+            )
 
-        return False, "ChatGPTWeb"
-    except:
-        return False, "Unknown"
+    return False, ""
 
 
-def debug(domain: str, response: HTTPResponse, chatgptweb: bool) -> None:
+def debug(url: str, response: HTTPResponse) -> None:
     status = response.getcode() if response else 000
     message = response.read().decode("UTF8") if response else ""
-    category = "ChatGPTWeb" if chatgptweb else "ChatGPTNextWeb"
-    logger.info(
-        f"domain: {domain} code: {status} category: {category} response: {message}"
-    )
+    logger.info(f"url: {url} code: {status} response: {message}")
 
 
 if __name__ == "__main__":

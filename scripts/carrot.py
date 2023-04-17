@@ -45,6 +45,9 @@ def fetch(params: dict) -> list[str]:
                 if site:
                     candidates.append(f"https://{site}")
 
+        logger.info(
+            f"[CarrotInfo] extract finished, found {len(candidates)} sites: {candidates}"
+        )
         return candidates
     except:
         logger.error(f"[CarrotError] occur error when extract domains from [{url}]")

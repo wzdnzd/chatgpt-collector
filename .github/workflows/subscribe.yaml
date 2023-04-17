@@ -1,7 +1,7 @@
 name: Subscribe
 on:
   schedule:
-    - cron: "15 00-15 * * *"
+    - cron: "15 00-15/2 * * *"
   workflow_dispatch:
 
 env:
@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
         with:
-          ref: main
+          ref: synthesized
 
       - name: Install
         uses: actions/setup-python@v2
