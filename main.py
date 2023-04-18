@@ -44,7 +44,11 @@ COMMON_PAYLOAD = {
     },
 }
 
-HEADERS = {"Content-Type": "application/json", "path": "v1/chat/completions"}
+HEADERS = {
+    "Content-Type": "application/json",
+    "path": "v1/chat/completions",
+    "User-Agent": utils.USER_AGENT,
+}
 
 
 def query_provider(name: str) -> GPTProvider:
@@ -163,10 +167,20 @@ def process(url: str) -> None:
             urls = batch_call(tasks.get("scripts", {}))
             # exist urls
             candidates = fetct_exist(tasks.get("persists"), pushtool)
+            # generate blacklist
+            blacklist = generate_blacklist(
+                persists=tasks.get("persists"),
+                blackconf=tasks.get("blacklist", {}),
+                pushtool=pushtool,
+            )
 
             data = batch_probe(
-                urls=urls, candidates=candidates, threshold=tasks.get("threshold")
+                urls=urls,
+                candidates=candidates,
+                threshold=tasks.get("threshold"),
+                blacklist=blacklist,
             )
+
             if not data:
                 logger.warning("[ProcessWarn] cannot found any domains")
                 return
@@ -212,7 +226,8 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
         return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
-    return {"threshold": threshold, "scripts": tasks, "persists": groups}
+    data.update({"threshold": threshold, "scripts": tasks, "persists": groups})
+    return data
 
 
 def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
@@ -239,12 +254,58 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
     return candidates
 
 
-def deduplicate(sites: list[str]) -> list[str]:
+def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -> dict:
+    if not persists or not blackconf:
+        return {}
+
+    address, autoadd = blackconf.get("address", ""), blackconf.get("auto", False)
+    if address not in persists or address in ["availables", "candidates"]:
+        return {}
+
+    url = pushtool.raw_url(persists.get(address))
+    content, regex = utils.http_get(url=url), ""
+    if content:
+        sites = list(
+            set(
+                [
+                    x
+                    for x in content.split("\n")
+                    if not utils.isblank(x) and not x.startswith("#") and not "|" in x
+                ]
+            )
+        )
+        regex = "|".join(sites)
+
+    return {"persist": address, "auto": autoadd, "regex": regex}
+
+
+def merge_blacklist(old: str, sites: list[str]) -> str:
+    if not sites:
+        return old
+    if not old:
+        return "\n".join(sites)
+
+    uniquesites = set(old.split("|"))
+    uniquesites.update(sites)
+
+    return "\n".join(list(uniquesites))
+
+
+def intercept(sites: list[str], blacklist: str = "") -> list[str]:
     if not sites:
         return []
 
-    dataset = {}
+    dataset, pattern = {}, None
+    if blacklist:
+        try:
+            pattern = re.compile(blacklist, flags=re.I)
+        except:
+            logger.error(f"[InterceptError] blacklist=[{blacklist}] is invalid")
+
     for site in sites:
+        if pattern and pattern.search(site):
+            continue
+
         hostname = parse.urlparse(url=site).netloc
         url = dataset.get(hostname, "")
         if not url or len(url) < len(site):
@@ -253,18 +314,29 @@ def deduplicate(sites: list[str]) -> list[str]:
     return list(dataset.values())
 
 
-def batch_probe(urls: list[str], candidates: dict, threshold: int) -> dict:
+def batch_probe(
+    urls: list[str], candidates: dict, threshold: int, blacklist: dict = {}
+) -> dict:
     if not urls and not candidates:
         return {}
 
     urls = urls if urls is not None else []
     candidates = candidates if candidates is not None else {}
     urls.extend(candidates.keys())
-    sites = deduplicate(sites=urls)
+
+    # automatically add sites whose failure times exceed the threshold to the blacklist
+    auto_addblack, regex = blacklist.get("auto", False), blacklist.get("regex", "")
+    sites = intercept(sites=urls, blacklist=regex)
+
     logger.info(f"[ProbeSites] starting probe count: {len(sites)} sites: {sites}")
 
     with multiprocessing.Manager() as manager:
-        collections, potentials, processes = manager.list(), manager.dict(), []
+        collections, blacksites, potentials, processes = (
+            manager.list(),
+            manager.list(),
+            manager.dict(),
+            [],
+        )
         semaphore, starttime = multiprocessing.Semaphore(max(50, 1)), time.time()
         for site in sites:
             semaphore.acquire()
@@ -274,7 +346,9 @@ def batch_probe(urls: list[str], candidates: dict, threshold: int) -> dict:
                     site,
                     candidates,
                     threshold,
+                    auto_addblack,
                     collections,
+                    blacksites,
                     potentials,
                     semaphore,
                 ),
@@ -285,14 +359,28 @@ def batch_probe(urls: list[str], candidates: dict, threshold: int) -> dict:
             p.join()
 
         availables = list(collections)
-        cost = "{:.3}s".format(time.time() - starttime)
+        cost = "{:.2f}s".format(time.time() - starttime)
         logger.info(
-            f"[ProbeInfo] collect finished, cost: {cost} count: {len(availables)} sites: {availables}"
+            f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites: {availables}"
         )
+        if auto_addblack:
+            logger.warning(
+                f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {list(blacksites)}"
+            )
+        else:
+            logger.warning(
+                f"[ProbeWarn] {len(blacksites)} sites need confirmation: {list(blacksites)}"
+            )
+
         data = {
             "availables": ",".join(availables),
             "candidates": json.dumps(dict(potentials)),
         }
+
+        persist = blacklist.get("persist", "")
+        if auto_addblack and len(blacksites) > 0 and persist:
+            data[persist] = merge_blacklist(regex, list(blacksites))
+
         return data
 
 
@@ -300,25 +388,31 @@ def check(
     url: str,
     candidates: dict,
     threshold: int,
+    auto_addblack: bool,
     availables: ListProxy,
+    blacksites: ListProxy,
     potentials: DictProxy,
     semaphore: Semaphore,
 ) -> None:
     try:
         status, apipath = judge(url=url, retry=2)
+        candidates = {} if candidates is None else candidates
         # reachable
         if status:
             availables.append(apipath)
             return
 
-        if url not in candidates:
+        # response status code is 200 but return html content
+        if apipath:
+            site = parse.urlparse(url).netloc if auto_addblack else apipath
+            blacksites.append(site)
             return
 
-        defeat = candidates.get(url).get("defeat", 0) + 1
-        if defeat > threshold:
-            return
-
-        potentials[url] = {"defeat": defeat}
+        defeat = candidates.get(url).get("defeat", 0) + 1 if url in candidates else 1
+        if defeat <= threshold:
+            potentials[url] = {"defeat": defeat}
+        elif auto_addblack:
+            blacksites.append(parse.urlparse(url).netloc)
     finally:
         if semaphore is not None:
             semaphore.release()
@@ -386,6 +480,12 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
                 continue
 
             content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type:
+                logger.warning(
+                    f"[JudgeWarn] site=[{link}] access success but return html content"
+                )
+                return False, link
+
             if not content_type or "text/plain" in content_type:
                 return True, link
 
@@ -429,10 +529,7 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=False,
-        default=os.environ.get(
-            "SUBSCRIBE_CONF",
-            "https://pastebin.enjoyit.ml/api/file/raw/clgh9ryvd0000l308s7e38h4y",
-        ).strip(),
+        default=os.environ.get("SUBSCRIBE_CONF", "").strip(),
         help="remote config file",
     )
 

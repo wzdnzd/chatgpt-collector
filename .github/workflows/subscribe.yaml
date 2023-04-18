@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
         with:
-          ref: synthesized
+          ref: main
 
       - name: Install
         uses: actions/setup-python@v2
