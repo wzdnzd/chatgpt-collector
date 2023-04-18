@@ -14,7 +14,7 @@ DEFAULT_LOG_FMT = (
 DEFAULT_LOG_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOG_FILENAME = "workflow.log"
 
-PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+PATH = os.path.abspath(os.path.dirname(__file__))
 
 
 class Logger:

@@ -32,6 +32,7 @@ COMMON_PATH_MODE = {
     "/api": GPTProvider.OPENAI,
 }
 
+
 COMMON_PAYLOAD = {
     GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
     GPTProvider.CHATGPT: {},
@@ -43,6 +44,7 @@ COMMON_PAYLOAD = {
         "presence_penalty": 0,
     },
 }
+
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -522,6 +524,9 @@ def debug(url: str, response: HTTPResponse) -> None:
 
 
 if __name__ == "__main__":
+    # load .env if file exist
+    utils.load_dotenv()
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
