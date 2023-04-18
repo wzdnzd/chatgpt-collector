@@ -11,7 +11,6 @@ def fetch(params: dict) -> list[str]:
     url = params.get(
         "url", "https://raw.githubusercontent.com/xx025/carrot/main/README.md"
     )
-    temporary = params.get("temporary", True)
     content = utils.http_get(url=url)
     if not content:
         return []
@@ -24,7 +23,7 @@ def fetch(params: dict) -> list[str]:
 
         candidates = []
         for group in groups:
-            if temporary:
+            if params.get("temporary", True):
                 flag = ("😄" in group and "🔑" not in group) or (
                     "🎁" in group and not re.search(r"注册|登录", group)
                 )
@@ -47,7 +46,7 @@ def fetch(params: dict) -> list[str]:
                     candidates.append(f"https://{site}")
 
         # failure sites
-        if temporary:
+        if params.get("lapse", False):
             groups = re.findall(r"\d+\.(?:\s+)?(https://.*)(?:\s+)?<br/>", content)
             for group in groups:
                 site = utils.extract_domain(
