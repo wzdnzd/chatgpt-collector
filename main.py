@@ -474,8 +474,10 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
         if not body:
             continue
         try:
+            headers = {"Referer": apipath}
+            headers.update(HEADERS)
             response = utils.http_post(
-                url=apipath, headers=HEADERS, params=body, retry=retry
+                url=apipath, headers=headers, params=body, retry=retry
             )
 
             if not response or response.getcode() != 200:
