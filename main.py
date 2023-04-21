@@ -503,8 +503,11 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
                 if data.get("id", ""):
                     return True, link
             except:
-                if not re.search(
-                    r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"', content
+                if (
+                    re.search(
+                        r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"', content
+                    )
+                    or '"text":"ChatGPT is' in content
                 ):
                     return True, link
                 else:
