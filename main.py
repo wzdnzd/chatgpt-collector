@@ -19,23 +19,21 @@ from urlvalidator import isurl
 
 
 class GPTProvider(Enum):
-    AZURE = 1
-    CHATGPT = 2
-    OPENAI = 3
+    OPENAI = 1
+    AZURE = 2
+    CHATGPT = 3
     UNKNOWN = 4
 
 
 COMMON_PATH_MODE = {
-    "/api/chat-process": GPTProvider.OPENAI,
-    "/api/chat-stream": GPTProvider.AZURE,
+    "/api/chat-process": GPTProvider.AZURE,
+    "/api/chat-stream": GPTProvider.OPENAI,
     "/api/chat": GPTProvider.OPENAI,
     "/api": GPTProvider.OPENAI,
 }
 
 
 COMMON_PAYLOAD = {
-    GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
-    GPTProvider.CHATGPT: {},
     GPTProvider.OPENAI: {
         "messages": [{"role": "user", "content": "What is ChatGPT?"}],
         "stream": True,
@@ -43,6 +41,8 @@ COMMON_PAYLOAD = {
         "temperature": 1,
         "presence_penalty": 0,
     },
+    GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
+    GPTProvider.CHATGPT: {},
 }
 
 
@@ -447,17 +447,26 @@ def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
     flag = mode != GPTProvider.UNKNOWN
     if full:
         if flag:
-            return [(apipath, mode)]
+            backup = (
+                GPTProvider.AZURE if mode == GPTProvider.OPENAI else GPTProvider.OPENAI
+            )
+            return [(apipath, mode), (apipath, backup)]
         else:
             return [(apipath, x) for x in COMMON_PAYLOAD.keys()]
     if flag:
         return [(f"{apipath}{x}", mode) for x in COMMON_PATH_MODE.keys()]
 
-    return [
-        (f"{apipath}{x}", y)
-        for x in COMMON_PATH_MODE.keys()
-        for y in COMMON_PAYLOAD.keys()
-    ]
+    # return [(f"{apipath}{x}", y) for x in COMMON_PATH_MODE.keys() for y in COMMON_PAYLOAD.keys()]
+
+    # try common combinations first for speedup
+    tasks = [(f"{apipath}{k}", v) for k, v in COMMON_PATH_MODE.items()]
+    for k, v in COMMON_PATH_MODE.items():
+        for mode in COMMON_PAYLOAD.keys():
+            # already in tasks
+            if mode != v:
+                tasks.append((f"{apipath}{k}", mode))
+
+    return tasks
 
 
 def judge(url: str, retry: int = 2) -> tuple[bool, str]:
@@ -490,12 +499,15 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
                 )
                 return False, link
 
-            if not content_type or "text/plain" in content_type:
-                return True, link
-
             content = response.read().decode("UTF8")
             if not content:
                 continue
+
+            if not content_type or "text/plain" in content_type:
+                if "invalid_request_error" in content:
+                    continue
+
+                return True, link
             try:
                 index = content.rfind("\n", 0, len(content) - 2)
                 text = content if index < 0 else content[index + 1 :]
