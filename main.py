@@ -11,6 +11,7 @@ from http.client import HTTPResponse
 from multiprocessing.managers import DictProxy, ListProxy
 from multiprocessing.synchronize import Semaphore
 from urllib import parse
+from typing import Any
 
 import push
 import utils
@@ -25,11 +26,17 @@ class GPTProvider(Enum):
     UNKNOWN = 4
 
 
+"""
+/api/chat-process: https://github.com/Chanzhaoyu/chatgpt-web/blob/main/src/api/index.ts
+/api/chat-stream: https://github.com/Yidadaa/ChatGPT-Next-Web/blob/main/app/api/chat-stream/route.ts
+/api/chat: https://github.com/mckaywrigley/chatbot-ui/blob/main/pages/api/chat.ts
+/api: https://github.com/ourongxing/chatgpt-vercel/blob/main/src/routes/api/index.ts
+"""
 COMMON_PATH_MODE = {
-    "/api/chat-process": GPTProvider.AZURE,
-    "/api/chat-stream": GPTProvider.OPENAI,
-    "/api/chat": GPTProvider.OPENAI,
-    "/api": GPTProvider.OPENAI,
+    "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
+    "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/api/chat": [GPTProvider.CHATGPT, GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
 }
 
 
@@ -42,7 +49,15 @@ COMMON_PAYLOAD = {
         "presence_penalty": 0,
     },
     GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
-    GPTProvider.CHATGPT: {},
+    GPTProvider.CHATGPT: {
+        "model": {
+            "id": "gpt-3.5-turbo",
+            "name": "GPT-3.5",
+            "maxLength": 12000,
+            "tokenLimit": 4000,
+        },
+        "messages": [{"role": "user", "content": "What is ChatGPT?"}],
+    },
 }
 
 
@@ -329,7 +344,6 @@ def batch_probe(
     # automatically add sites whose failure times exceed the threshold to the blacklist
     auto_addblack, regex = blacklist.get("auto", False), blacklist.get("regex", "")
     sites = intercept(sites=urls, blacklist=regex)
-
     logger.info(f"[ProbeSites] starting probe count: {len(sites)} sites: {sites}")
 
     with multiprocessing.Manager() as manager:
@@ -420,53 +434,74 @@ def check(
             semaphore.release()
 
 
-def parse_url(url: str) -> tuple[bool, str, GPTProvider]:
+def parse_url(url: str) -> tuple[bool, str, list[GPTProvider]]:
     if not isurl(url):
-        return False, "", GPTProvider.UNKNOWN
+        return False, "", [GPTProvider.UNKNOWN]
 
     result = parse.urlparse(url=url)
-    full, mode = result.path and result.path != "/", GPTProvider.UNKNOWN
+    full, modes = result.path and result.path != "/", [GPTProvider.UNKNOWN]
     apipath = f"{result.scheme}://{result.netloc}"
     if full:
         apipath = f"{apipath}{result.path}"
-        mode = COMMON_PATH_MODE.get(result.path, mode)
+        modes = COMMON_PATH_MODE.get(result.path, modes)
 
     if result.query:
         params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
         provider = query_provider(params.get("mode", ""))
-        mode = provider if provider != GPTProvider.UNKNOWN else mode
+        modes = [provider] if provider != GPTProvider.UNKNOWN else modes
 
-    return full, apipath, mode
+    return full, apipath, modes
 
 
 def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
-    full, apipath, mode = parse_url(url=url)
+    full, apipath, modes = parse_url(url=url)
     if not apipath:
         return []
 
-    flag = mode != GPTProvider.UNKNOWN
+    flag = len(modes) > 0 and GPTProvider.UNKNOWN not in modes
     if full:
         if flag:
-            backup = (
-                GPTProvider.AZURE if mode == GPTProvider.OPENAI else GPTProvider.OPENAI
-            )
-            return [(apipath, mode), (apipath, backup)]
+            return [(apipath, x) for x in modes]
         else:
             return [(apipath, x) for x in COMMON_PAYLOAD.keys()]
-    if flag:
-        return [(f"{apipath}{x}", mode) for x in COMMON_PATH_MODE.keys()]
-
-    # return [(f"{apipath}{x}", y) for x in COMMON_PATH_MODE.keys() for y in COMMON_PAYLOAD.keys()]
 
     # try common combinations first for speedup
-    tasks = [(f"{apipath}{k}", v) for k, v in COMMON_PATH_MODE.items()]
+    combinations = []
     for k, v in COMMON_PATH_MODE.items():
-        for mode in COMMON_PAYLOAD.keys():
-            # already in tasks
-            if mode != v:
-                tasks.append((f"{apipath}{k}", mode))
+        link = f"{apipath}{k}"
+        if GPTProvider.OPENAI not in v:
+            v.append(GPTProvider.OPENAI)
 
+        combinations.extend([(link, x) for x in v])
+
+    # combine
+    combinations.extend(
+        [
+            (f"{apipath}{x}", y)
+            for x in COMMON_PATH_MODE.keys()
+            for y in COMMON_PAYLOAD.keys()
+        ]
+    )
+
+    # remove duplicates and return in original order
+    tasks = list(set(combinations))
+    tasks.sort(key=combinations.index)
     return tasks
+
+
+def read_response(response: HTTPResponse, key: str = "", expected: int = 200) -> Any:
+    if not response or type(response) != HTTPResponse:
+        return None
+
+    success = expected == response.getcode()
+    if not success:
+        return None
+    try:
+        content = response.read().decode("UTF8")
+        data = json.loads(content)
+        return data if not key else data.get(key, None)
+    except:
+        return None
 
 
 def judge(url: str, retry: int = 2) -> tuple[bool, str]:
@@ -478,13 +513,30 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
         return False, ""
 
     for apipath, mode in tasks:
-        body = COMMON_PAYLOAD.get(mode)
+        body, headers = COMMON_PAYLOAD.get(mode), {"Referer": apipath}
+        headers.update(HEADERS)
+
+        if mode == GPTProvider.CHATGPT and apipath.endswith("/api/chat"):
+            prefix = apipath.rsplit("/", maxsplit=1)[0]
+            response = utils.http_post(url=f"{prefix}/user", params={"authcode": ""})
+            authcode = read_response(response=response, key="authCode")
+            if not authcode or type(authcode) != str:
+                continue
+
+            # x-auth-code
+            headers["x-auth-code"] = authcode
+
+            response = utils.http_post(url=f"{prefix}/models", params={"key": ""})
+            models = read_response(response=response, key="")
+            if models and type(models) == list:
+                for model in models:
+                    if model and type(model) == dict:
+                        body["model"] = model
+                        break
+
         link = f"{apipath}?mode={mode.name.lower()}"
-        if not body:
-            continue
+
         try:
-            headers = {"Referer": apipath}
-            headers.update(HEADERS)
             response = utils.http_post(
                 url=apipath, headers=headers, params=body, retry=retry
             )
@@ -535,7 +587,7 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
 
 
 def debug(url: str, response: HTTPResponse) -> None:
-    status = response.getcode() if response else 000
+    status = response.getcode() if response else 0
     message = response.read().decode("UTF8") if response else ""
     logger.info(f"url: {url} code: {status} response: {message}")
 
