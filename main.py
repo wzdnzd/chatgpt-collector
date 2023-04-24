@@ -37,6 +37,7 @@ COMMON_PATH_MODE = {
     "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api/chat": [GPTProvider.CHATGPT, GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/v1/chat/completions": [GPTProvider.OPENAI],
 }
 
 
@@ -511,7 +512,6 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
     tasks = generate_tasks(url=url)
     if not tasks:
         return False, ""
-
     for apipath, mode in tasks:
         body, headers = COMMON_PAYLOAD.get(mode), {"Referer": apipath}
         headers.update(HEADERS)
@@ -520,11 +520,10 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             prefix = apipath.rsplit("/", maxsplit=1)[0]
             response = utils.http_post(url=f"{prefix}/user", params={"authcode": ""})
             authcode = read_response(response=response, key="authCode")
-            if not authcode or type(authcode) != str:
-                continue
 
             # x-auth-code
-            headers["x-auth-code"] = authcode
+            if authcode and type(authcode) == str:
+                headers["x-auth-code"] = authcode
 
             response = utils.http_post(url=f"{prefix}/models", params={"key": ""})
             models = read_response(response=response, key="")
@@ -540,10 +539,10 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             response = utils.http_post(
                 url=apipath, headers=headers, params=body, retry=retry
             )
-
             if not response or response.getcode() != 200:
                 continue
 
+            link = f"{link}&auth=true" if "x-auth-code" in headers else link
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type:
                 logger.warning(
@@ -569,7 +568,8 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             except:
                 if (
                     re.search(
-                        r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"', content
+                        r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"|"delta":(\s+)?{"content":(\s+)?"([\s\S]*?)"',
+                        content,
                     )
                     or '"text":"ChatGPT is' in content
                 ):
