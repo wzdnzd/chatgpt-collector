@@ -288,7 +288,7 @@ def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -
                 [
                     x
                     for x in content.split("\n")
-                    if not utils.isblank(x) and not x.startswith("#") and not "|" in x
+                    if not utils.isblank(x) and not x.startswith("#")
                 ]
             )
         )
