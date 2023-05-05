@@ -312,7 +312,7 @@ class PushToDrift(PushToPastefy):
 
     def __init__(self, token: str) -> None:
         super().__init__(token=token)
-        self.name = "drift.vercel"
+        self.name = "drift"
         self.api_address = "https://pastebin.enjoyit.ml/api/file"
 
     def raw_url(self, push_conf: dict) -> str:

@@ -131,7 +131,7 @@ def http_post(
         request = urllib.request.Request(
             url=url, data=data, headers=headers, method="POST"
         )
-        return urllib.request.urlopen(request, timeout=30, context=CTX)
+        return urllib.request.urlopen(request, timeout=15, context=CTX)
     except urllib.error.HTTPError as e:
         logger.debug(f"request failed, url=[{url}], code: {e.code}")
         if e.code in [401, 404]:
@@ -206,3 +206,13 @@ def load_dotenv() -> None:
             k, v = words[0].strip(), words[1].strip()
             if k and v:
                 os.environ[k] = v
+
+
+def url_complete(site: str) -> str:
+    if isblank(site):
+        return ""
+
+    if not (site.startswith("https://") or site.startswith("http://")):
+        site = f"https://{site}"
+
+    return site

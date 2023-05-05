@@ -41,7 +41,7 @@ def fetch(params: dict) -> list[str]:
                 continue
 
             for domain in matchers:
-                site = domain.strip().lower()
+                site = utils.url_complete(domain.strip().lower())
                 if site:
                     candidates.append(f"https://{site}")
 
@@ -49,8 +49,8 @@ def fetch(params: dict) -> list[str]:
         if params.get("lapse", False):
             groups = re.findall(r"\d+\.(?:\s+)?(https://.*)(?:\s+)?<br/>", content)
             for group in groups:
-                site = utils.extract_domain(
-                    group.strip().lower(), include_protocal=True
+                site = utils.url_complete(
+                    utils.extract_domain(group.strip().lower(), include_protocal=True)
                 )
                 if site:
                     candidates.append(site)

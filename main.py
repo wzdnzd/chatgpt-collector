@@ -1,5 +1,7 @@
 import argparse
+from dataclasses import dataclass
 import importlib
+import itertools
 import json
 import multiprocessing
 import os
@@ -37,19 +39,30 @@ COMMON_PATH_MODE = {
     "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api/chat": [GPTProvider.CHATGPT, GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/api/generateStream": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/v1/chat/completions": [GPTProvider.OPENAI],
 }
+
+DEFAULT_PROMPT = "Please tell me what is ChatGPT in English with at most 20 words"
 
 
 COMMON_PAYLOAD = {
     GPTProvider.OPENAI: {
-        "messages": [{"role": "user", "content": "What is ChatGPT?"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": DEFAULT_PROMPT,
+            }
+        ],
         "stream": True,
         "model": "gpt-3.5-turbo",
         "temperature": 1,
         "presence_penalty": 0,
     },
-    GPTProvider.AZURE: {"prompt": "What is ChatGPT?", "options": {}},
+    GPTProvider.AZURE: {
+        "prompt": DEFAULT_PROMPT,
+        "options": {},
+    },
     GPTProvider.CHATGPT: {
         "model": {
             "id": "gpt-3.5-turbo",
@@ -57,7 +70,12 @@ COMMON_PAYLOAD = {
             "maxLength": 12000,
             "tokenLimit": 4000,
         },
-        "messages": [{"role": "user", "content": "What is ChatGPT?"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": DEFAULT_PROMPT,
+            }
+        ],
     },
 }
 
@@ -163,6 +181,68 @@ def batch_call(tasks: dict) -> list[str]:
         return []
 
 
+def crawl_pages(tasks: dict) -> list[str]:
+    if not tasks or type(tasks) != dict:
+        return []
+
+    params = [
+        [k, v.get("include", ""), v.get("exclude", "")]
+        for k, v in tasks.items()
+        if type(v) == dict
+    ]
+
+    if not params:
+        return []
+
+    try:
+        cpu_count = multiprocessing.cpu_count()
+        num = len(params) if len(params) <= cpu_count else cpu_count
+
+        pool = multiprocessing.Pool(num)
+        results = pool.starmap(crawl_single_page, params)
+        pool.close()
+
+        links = list(itertools.chain.from_iterable(results))
+        return list(set(links))
+    except:
+        traceback.print_exc()
+        return []
+
+
+def crawl_single_page(url: str, include: str, exclude: str = "") -> list[str]:
+    if not utils.isurl(url=url) or utils.isblank(include):
+        logger.error(
+            f"[PageError] invalid task configuration, must specify url and include"
+        )
+        return []
+
+    try:
+        content, collections = utils.http_get(url=url), set()
+        if content == "":
+            return []
+
+        regex = "https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
+        groups = re.findall(regex, content, flags=re.I)
+
+        for item in groups:
+            try:
+                if not re.search(include, item, flags=re.I) or (
+                    exclude and re.search(exclude, item, flags=re.I)
+                ):
+                    continue
+
+                collections.add(item)
+            except:
+                logger.error(
+                    f"[PageError] maybe pattern 'include' or 'exclude' exists some problems, include: {include}\texclude: {exclude}"
+                )
+
+        return list(collections)
+    except:
+        logger.error(f"[PageError] occur error when crawl site=[{url}]")
+        return []
+
+
 def process(url: str) -> None:
     if not url or not isurl(url):
         logger.error("[ConfigError] cannot process because config is invalid")
@@ -183,6 +263,7 @@ def process(url: str) -> None:
                 return
 
             urls = batch_call(tasks.get("scripts", {}))
+            urls.extend(crawl_pages(tasks.get("pages", {})))
             # exist urls
             candidates = fetct_exist(tasks.get("persists"), pushtool)
             # generate blacklist
@@ -221,19 +302,9 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
     if not data or not pushtool:
         return {}
 
-    scripts, persists = data.get("scripts", {}), data.get("persists", {})
-    tasks, groups = {}, {}
-
-    if type(scripts) != dict or type(persists) != dict:
-        logger.error("[ConfigError] scripts or persists not ilegal")
-        return {}
-
-    for k, v in scripts.items():
-        if utils.isblank(k) or type(v) != dict or not v.get("enable", True):
-            continue
-        tasks[k] = v.get("params", {})
-
-    if not tasks:
+    persists, groups = data.pop("persists", {}), {}
+    if not persists or type(persists) != dict:
+        logger.error("[ConfigError] collect configuration must specify persists")
         return {}
 
     for k, v in persists.items():
@@ -241,10 +312,42 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             groups[k] = v
 
     if "candidates" not in groups or "availables" not in groups:
+        logger.error(
+            "[ConfigError] persists must include 'availables' and 'candidates'"
+        )
+        return {}
+
+    scripts, pages = data.pop("scripts", {}), data.pop("pages", {})
+    script_tasks, page_tasks = {}, {}
+
+    if scripts and type(scripts) == dict:
+        for k, v in scripts.items():
+            if utils.isblank(k) or type(v) != dict or not v.get("enable", True):
+                continue
+            script_tasks[k] = v.get("params", {})
+
+    if pages and type(pages) == dict:
+        for k, v in pages.items():
+            if not utils.isurl(k) or type(v) != dict or not v.pop("enable", True):
+                continue
+
+            page_tasks[k] = v
+
+    if not script_tasks and not page_tasks:
+        logger.error(
+            "[ConfigError] cannot found any legal collect task from scripts and pages"
+        )
         return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
-    data.update({"threshold": threshold, "scripts": tasks, "persists": groups})
+    data.update(
+        {
+            "threshold": threshold,
+            "scripts": script_tasks,
+            "pages": page_tasks,
+            "persists": groups,
+        }
+    )
     return data
 
 
@@ -345,7 +448,7 @@ def batch_probe(
     # automatically add sites whose failure times exceed the threshold to the blacklist
     auto_addblack, regex = blacklist.get("auto", False), blacklist.get("regex", "")
     sites = intercept(sites=urls, blacklist=regex)
-    logger.info(f"[ProbeSites] starting probe count: {len(sites)} sites: {sites}")
+    logger.info(f"[ProbeSites] starting sites probe, count: {len(sites)}")
 
     with multiprocessing.Manager() as manager:
         collections, blacksites, potentials, processes = (
@@ -378,8 +481,9 @@ def batch_probe(
         availables = list(collections)
         cost = "{:.2f}s".format(time.time() - starttime)
         logger.info(
-            f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites: {availables}"
+            f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites"
         )
+
         if auto_addblack:
             logger.warning(
                 f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {list(blacksites)}"
@@ -554,6 +658,12 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             if not content:
                 continue
 
+            if not re.search("ChatGPT", content, flags=re.I):
+                logger.warning(
+                    f"[JudgeWarn] site=[{link}] access success but returned content irrelevant to the question"
+                )
+                return False, link
+
             if not content_type or "text/plain" in content_type:
                 if "invalid_request_error" in content:
                     continue
@@ -562,8 +672,10 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             try:
                 index = content.rfind("\n", 0, len(content) - 2)
                 text = content if index < 0 else content[index + 1 :]
-                data = json.loads(text)
-                if data.get("id", ""):
+                data, keys = json.loads(text), set(["id", "role", "text", "delta"])
+
+                # check whether data's keys include 'id', 'role', 'text' or 'delta'
+                if not keys.isdisjoint(set(data.keys())):
                     return True, link
             except:
                 if (

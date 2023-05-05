@@ -5,6 +5,7 @@
 
 import logging
 import os
+import re
 import sys
 
 DEFAULT_LOG_LEVEL = logging.INFO
@@ -15,6 +16,19 @@ DEFAULT_LOG_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOG_FILENAME = "workflow.log"
 
 PATH = os.path.abspath(os.path.dirname(__file__))
+
+
+class SensitiveFormatter(logging.Formatter):
+    """Formatter that removes sensitive information in urls"""
+
+    @staticmethod
+    def _filter(s):
+        "(https?://(.*?))/.*"
+        return re.sub(r"(https?:\/\/(.*?))/\S+", r"\1", s, flags=re.I)
+
+    def format(self, record):
+        original = logging.Formatter.format(self, record)
+        return self._filter(original)
 
 
 class Logger:
