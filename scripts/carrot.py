@@ -43,7 +43,7 @@ def fetch(params: dict) -> list[str]:
             for domain in matchers:
                 site = utils.url_complete(domain.strip().lower())
                 if site:
-                    candidates.append(f"https://{site}")
+                    candidates.append(site)
 
         # failure sites
         if params.get("lapse", False):

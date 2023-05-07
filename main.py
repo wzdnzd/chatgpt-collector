@@ -524,9 +524,15 @@ def check(
             return
 
         # response status code is 200 but return html content
+        reuslt = parse.urlparse(url)
+        site, path = reuslt.netloc, reuslt.path
         if apipath:
-            site = parse.urlparse(url).netloc if auto_addblack else apipath
+            site = site if auto_addblack else apipath
             blacksites.append(site)
+            return
+
+        # comes from a crawler and fails any api test
+        if not path or path == "/":
             return
 
         defeat = candidates.get(url).get("defeat", 0) + 1 if url in candidates else 1
@@ -658,38 +664,41 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             if not content:
                 continue
 
-            if not re.search("ChatGPT", content, flags=re.I):
-                logger.warning(
-                    f"[JudgeWarn] site=[{link}] access success but returned content irrelevant to the question"
-                )
-                return False, link
+            # return directly without further analysis
+            return re.search("ChatGPT", content, flags=re.I), link
 
-            if not content_type or "text/plain" in content_type:
-                if "invalid_request_error" in content:
-                    continue
+            # if not re.search("ChatGPT", content, flags=re.I):
+            #     logger.warning(
+            #         f"[JudgeWarn] site=[{link}] access success but returned content irrelevant to the question"
+            #     )
+            #     return False, link
 
-                return True, link
-            try:
-                index = content.rfind("\n", 0, len(content) - 2)
-                text = content if index < 0 else content[index + 1 :]
-                data, keys = json.loads(text), set(["id", "role", "text", "delta"])
+            # if not content_type or "text/plain" in content_type:
+            #     if "invalid_request_error" in content:
+            #         continue
 
-                # check whether data's keys include 'id', 'role', 'text' or 'delta'
-                if not keys.isdisjoint(set(data.keys())):
-                    return True, link
-            except:
-                if (
-                    re.search(
-                        r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"|"delta":(\s+)?{"content":(\s+)?"([\s\S]*?)"',
-                        content,
-                    )
-                    or '"text":"ChatGPT is' in content
-                ):
-                    return True, link
-                else:
-                    logger.error(
-                        f"[JudgeError] url: {apipath} mode: {mode.name} message: {content}"
-                    )
+            #     return True, link
+            # try:
+            #     index = content.rfind("\n", 0, len(content) - 2)
+            #     text = content if index < 0 else content[index + 1 :]
+            #     data, keys = json.loads(text), set(["id", "role", "text", "delta"])
+
+            #     # check whether data's keys include 'id', 'role', 'text' or 'delta'
+            #     if not keys.isdisjoint(set(data.keys())):
+            #         return True, link
+            # except:
+            #     if (
+            #         re.search(
+            #             r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"|"delta":(\s+)?{"content":(\s+)?"([\s\S]*?)"',
+            #             content,
+            #         )
+            #         or '"text":"ChatGPT is' in content
+            #     ):
+            #         return True, link
+            #     else:
+            #         logger.error(
+            #             f"[JudgeError] url: {apipath} mode: {mode.name} message: {content}"
+            #         )
         except Exception as e:
             logger.error(
                 f"[JudgeError] url: {apipath} mode: {mode.name} message: {str(e)}"
