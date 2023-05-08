@@ -1,5 +1,4 @@
 import argparse
-from dataclasses import dataclass
 import importlib
 import itertools
 import json
@@ -12,8 +11,8 @@ from enum import Enum
 from http.client import HTTPResponse
 from multiprocessing.managers import DictProxy, ListProxy
 from multiprocessing.synchronize import Semaphore
-from urllib import parse
 from typing import Any
+from urllib import parse
 
 import push
 import utils
@@ -24,8 +23,9 @@ from urlvalidator import isurl
 class GPTProvider(Enum):
     OPENAI = 1
     AZURE = 2
-    CHATGPT = 3
-    UNKNOWN = 4
+    PROXIEDOPENAI = 3
+    AILINK = 4
+    UNKNOWN = 5
 
 
 """
@@ -37,10 +37,11 @@ class GPTProvider(Enum):
 COMMON_PATH_MODE = {
     "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
     "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
-    "/api/chat": [GPTProvider.CHATGPT, GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/api/chat": [GPTProvider.PROXIEDOPENAI, GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api/generateStream": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/v1/chat/completions": [GPTProvider.OPENAI],
+    "/v1/chat/gpt/": [GPTProvider.AILINK],
 }
 
 DEFAULT_PROMPT = "Please tell me what is ChatGPT in English with at most 20 words"
@@ -48,12 +49,7 @@ DEFAULT_PROMPT = "Please tell me what is ChatGPT in English with at most 20 word
 
 COMMON_PAYLOAD = {
     GPTProvider.OPENAI: {
-        "messages": [
-            {
-                "role": "user",
-                "content": DEFAULT_PROMPT,
-            }
-        ],
+        "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
         "stream": True,
         "model": "gpt-3.5-turbo",
         "temperature": 1,
@@ -63,19 +59,21 @@ COMMON_PAYLOAD = {
         "prompt": DEFAULT_PROMPT,
         "options": {},
     },
-    GPTProvider.CHATGPT: {
+    GPTProvider.PROXIEDOPENAI: {
         "model": {
             "id": "gpt-3.5-turbo",
             "name": "GPT-3.5",
             "maxLength": 12000,
             "tokenLimit": 4000,
         },
-        "messages": [
-            {
-                "role": "user",
-                "content": DEFAULT_PROMPT,
-            }
+        "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
+    },
+    GPTProvider.AILINK: {
+        "list": [
+            {"role": "user", "content": DEFAULT_PROMPT},
+            {"role": "assistant", "content": "..."},
         ],
+        "temperature": 1,
     },
 }
 
@@ -626,7 +624,7 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
         body, headers = COMMON_PAYLOAD.get(mode), {"Referer": apipath}
         headers.update(HEADERS)
 
-        if mode == GPTProvider.CHATGPT and apipath.endswith("/api/chat"):
+        if mode == GPTProvider.PROXIEDOPENAI and apipath.endswith("/api/chat"):
             prefix = apipath.rsplit("/", maxsplit=1)[0]
             response = utils.http_post(url=f"{prefix}/user", params={"authcode": ""})
             authcode = read_response(response=response, key="authCode")
@@ -657,6 +655,13 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             if "text/html" in content_type:
                 logger.warning(
                     f"[JudgeWarn] site=[{link}] access success but return html content"
+                )
+                return False, link
+
+            allow_origin = response.headers.get("Access-Control-Allow-Origin", "*")
+            if allow_origin and allow_origin != "*":
+                logger.warning(
+                    f"[JudeWarn] site=[{link}] access success but only support {allow_origin}"
                 )
                 return False, link
 
