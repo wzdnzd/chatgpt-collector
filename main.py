@@ -183,11 +183,15 @@ def crawl_pages(tasks: dict) -> list[str]:
     if not tasks or type(tasks) != dict:
         return []
 
-    params = [
-        [k, v.get("include", ""), v.get("exclude", "")]
-        for k, v in tasks.items()
-        if type(v) == dict
-    ]
+    params = []
+    for k, v in tasks.items():
+        if not k or type(v) != dict:
+            continue
+
+        include = v.get("include", "").strip()
+        exclude = v.get("exclude", "").strip()
+        regex = v.get("regex", "").strip()
+        params.append([k, include, exclude, regex])
 
     if not params:
         return []
@@ -200,17 +204,22 @@ def crawl_pages(tasks: dict) -> list[str]:
         results = pool.starmap(crawl_single_page, params)
         pool.close()
 
-        links = list(itertools.chain.from_iterable(results))
-        return list(set(links))
+        links = list(set(list(itertools.chain.from_iterable(results))))
+        logger.info(
+            f"[PagesCrawl] crawl from pages finished, found {len(links)} sites: {links}"
+        )
+        return links
     except:
         traceback.print_exc()
         return []
 
 
-def crawl_single_page(url: str, include: str, exclude: str = "") -> list[str]:
-    if not utils.isurl(url=url) or utils.isblank(include):
+def crawl_single_page(
+    url: str, include: str, exclude: str = "", regex: str = ""
+) -> list[str]:
+    if not utils.isurl(url=url) or (utils.isblank(include) and utils.isblank(regex)):
         logger.error(
-            f"[PageError] invalid task configuration, must specify url and include"
+            f"[PageError] invalid task configuration, must specify url and include or regex"
         )
         return []
 
@@ -219,7 +228,11 @@ def crawl_single_page(url: str, include: str, exclude: str = "") -> list[str]:
         if content == "":
             return []
 
-        regex = "https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
+        regex = (
+            "https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
+            if utils.isblank(regex)
+            else regex
+        )
         groups = re.findall(regex, content, flags=re.I)
 
         for item in groups:
@@ -229,7 +242,9 @@ def crawl_single_page(url: str, include: str, exclude: str = "") -> list[str]:
                 ):
                     continue
 
-                collections.add(item)
+                item = utils.url_complete(item)
+                if item:
+                    collections.add(item)
             except:
                 logger.error(
                     f"[PageError] maybe pattern 'include' or 'exclude' exists some problems, include: {include}\texclude: {exclude}"
@@ -329,7 +344,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             if not utils.isurl(k) or type(v) != dict or not v.pop("enable", True):
                 continue
 
-            page_tasks[k] = v
+            page_tasks[k] = v.get("params", {})
 
     if not script_tasks and not page_tasks:
         logger.error(
@@ -636,10 +651,8 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             response = utils.http_post(url=f"{prefix}/models", params={"key": ""})
             models = read_response(response=response, key="")
             if models and type(models) == list:
-                for model in models:
-                    if model and type(model) == dict:
-                        body["model"] = model
-                        break
+                models.sort(key=lambda x: x.get("id", ""))
+                body["model"] = models[0]
 
         link = f"{apipath}?mode={mode.name.lower()}"
 
@@ -661,7 +674,7 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             allow_origin = response.headers.get("Access-Control-Allow-Origin", "*")
             if allow_origin and allow_origin != "*":
                 logger.warning(
-                    f"[JudeWarn] site=[{link}] access success but only support {allow_origin}"
+                    f"[JudeWarn] site=[{link}] access success but only support origin {allow_origin}"
                 )
                 return False, link
 
