@@ -35,8 +35,8 @@ class GPTProvider(Enum):
 /api: https://github.com/ourongxing/chatgpt-vercel/blob/main/src/routes/api/index.ts
 """
 COMMON_PATH_MODE = {
-    "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
     "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
+    "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
     "/api/chat": [GPTProvider.PROXIEDOPENAI, GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api/generateStream": [GPTProvider.OPENAI, GPTProvider.AZURE],
@@ -226,6 +226,7 @@ def crawl_single_page(
     try:
         content, collections = utils.http_get(url=url), set()
         if content == "":
+            logger.error(f"[PageError] invalid response, site: {url}")
             return []
 
         regex = (
@@ -250,7 +251,11 @@ def crawl_single_page(
                     f"[PageError] maybe pattern 'include' or 'exclude' exists some problems, include: {include}\texclude: {exclude}"
                 )
 
-        return list(collections)
+        sites = list(collections)
+        logger.info(
+            f"[PageInfo] crawl page {url} finished, found {len(sites)} sites: {sites}"
+        )
+        return sites
     except:
         logger.error(f"[PageError] occur error when crawl site=[{url}]")
         return []
@@ -290,6 +295,7 @@ def process(url: str) -> None:
                 urls=urls,
                 candidates=candidates,
                 threshold=tasks.get("threshold"),
+                tolerance=tasks.get("tolerance"),
                 blacklist=blacklist,
             )
 
@@ -353,9 +359,11 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
         return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
+    tolerance = max(int(data.get("tolerance", 3)), 1)
     data.update(
         {
             "threshold": threshold,
+            "tolerance": tolerance,
             "scripts": script_tasks,
             "pages": page_tasks,
             "persists": groups,
@@ -449,7 +457,11 @@ def intercept(sites: list[str], blacklist: str = "") -> list[str]:
 
 
 def batch_probe(
-    urls: list[str], candidates: dict, threshold: int, blacklist: dict = {}
+    urls: list[str],
+    candidates: dict,
+    threshold: int,
+    tolerance: int,
+    blacklist: dict = {},
 ) -> dict:
     if not urls and not candidates:
         return {}
@@ -484,6 +496,7 @@ def batch_probe(
                     blacksites,
                     potentials,
                     semaphore,
+                    tolerance,
                 ),
             )
             p.start()
@@ -527,9 +540,28 @@ def check(
     blacksites: ListProxy,
     potentials: DictProxy,
     semaphore: Semaphore,
+    tolerance: int,
 ) -> None:
     try:
-        status, apipath = judge(url=url, retry=2)
+        # record start time
+        starttime = time.time()
+
+        # detect connectivity
+        status, apipath = judge(url=url, retry=2, tolerance=tolerance)
+
+        # record spend time
+        cost = time.time() - starttime
+        domain = utils.extract_domain(url=url, include_protocal=True)
+        message = (
+            "[CheckInfo] finished check, site: {} status: {} cost: {:.2f}s".format(
+                domain, status, cost
+            )
+        )
+        if status:
+            logger.info(message)
+        else:
+            logger.error(message)
+
         candidates = {} if candidates is None else candidates
         # reachable
         if status:
@@ -590,13 +622,14 @@ def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
             return [(apipath, x) for x in COMMON_PAYLOAD.keys()]
 
     # try common combinations first for speedup
-    combinations = []
+    combinations, mostlikely = [], []
     for k, v in COMMON_PATH_MODE.items():
         link = f"{apipath}{k}"
         if GPTProvider.OPENAI not in v:
             v.append(GPTProvider.OPENAI)
 
-        combinations.extend([(link, x) for x in v])
+        mostlikely.append((link, v[0]))
+        combinations.extend([(link, x) for x in v[1:]])
 
     # combine
     combinations.extend(
@@ -607,9 +640,10 @@ def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
         ]
     )
 
+    mostlikely.extend(combinations)
     # remove duplicates and return in original order
-    tasks = list(set(combinations))
-    tasks.sort(key=combinations.index)
+    tasks = list(set(mostlikely))
+    tasks.sort(key=mostlikely.index)
     return tasks
 
 
@@ -628,27 +662,33 @@ def read_response(response: HTTPResponse, key: str = "", expected: int = 200) ->
         return None
 
 
-def judge(url: str, retry: int = 2) -> tuple[bool, str]:
+def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
     """
     Judge whether the website is valid and sniff api path
     """
-    tasks = generate_tasks(url=url)
+    tasks, tolerance = generate_tasks(url=url), max(tolerance, 1)
     if not tasks:
         return False, ""
+
+    error, notfound = 0, 0
     for apipath, mode in tasks:
         body, headers = COMMON_PAYLOAD.get(mode), {"Referer": apipath}
         headers.update(HEADERS)
 
         if mode == GPTProvider.PROXIEDOPENAI and apipath.endswith("/api/chat"):
             prefix = apipath.rsplit("/", maxsplit=1)[0]
-            response = utils.http_post(url=f"{prefix}/user", params={"authcode": ""})
+            response = utils.http_post_noerror(
+                url=f"{prefix}/user", params={"authcode": ""}
+            )
             authcode = read_response(response=response, key="authCode")
 
             # x-auth-code
             if authcode and type(authcode) == str:
                 headers["x-auth-code"] = authcode
 
-            response = utils.http_post(url=f"{prefix}/models", params={"key": ""})
+            response = utils.http_post_noerror(
+                url=f"{prefix}/models", params={"key": ""}
+            )
             models = read_response(response=response, key="")
             if models and type(models) == list:
                 models.sort(key=lambda x: x.get("id", ""))
@@ -657,9 +697,30 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
         link = f"{apipath}?mode={mode.name.lower()}"
 
         try:
-            response = utils.http_post(
-                url=apipath, headers=headers, params=body, retry=retry
+            timeout = max(12 - 2.5 * (error + notfound), 6)
+            response, exitcode = utils.http_post(
+                url=apipath,
+                headers=headers,
+                params=body,
+                retry=retry,
+                timeout=timeout,
             )
+
+            # reduce unnecessary attempts to speed up
+            if exitcode > 0:
+                if exitcode == 2:
+                    notfound += 1
+                elif exitcode == 3:
+                    error += 1
+            if (notfound + error) >= len(COMMON_PATH_MODE):
+                logger.error(f"[JudgeError] not found any valid url path in site={url}")
+                return False, ""
+            if error > tolerance:
+                logger.error(
+                    f"[JudgeError] site={url} reached maximum allowable errors: {tolerance}"
+                )
+                return False, ""
+
             if not response or response.getcode() != 200:
                 continue
 
@@ -683,7 +744,8 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
                 continue
 
             # return directly without further analysis
-            return re.search("ChatGPT", content, flags=re.I), link
+            match = re.search("ChatGPT", content, flags=re.I)
+            return match is not None, link
 
             # if not re.search("ChatGPT", content, flags=re.I):
             #     logger.warning(
@@ -723,12 +785,6 @@ def judge(url: str, retry: int = 2) -> tuple[bool, str]:
             )
 
     return False, ""
-
-
-def debug(url: str, response: HTTPResponse) -> None:
-    status = response.getcode() if response else 0
-    message = response.read().decode("UTF8") if response else ""
-    logger.info(f"url: {url} code: {status} response: {message}")
 
 
 if __name__ == "__main__":

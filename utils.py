@@ -37,7 +37,6 @@ def http_get(
         return ""
 
     if retry <= 0:
-        logger.debug(f"achieves max retry, url={url}")
         return ""
 
     if not headers:
@@ -72,35 +71,11 @@ def http_get(
             content = str(content, encoding="utf8")
         except:
             content = gzip.decompress(content).decode("utf8")
-        if status_code != 200:
-            logger.debug(
-                f"request failed, status code: {status_code}\t message: {content}"
-            )
-            return ""
 
-        return content
-    except urllib.error.HTTPError as e:
-        logger.debug(f"request failed, url=[{url}], code: {e.code}")
-        try:
-            message = str(e.read(), encoding="utf8")
-        except UnicodeDecodeError:
-            message = str(e.read(), encoding="utf8")
-        if e.code == 503 and "token" not in message:
-            time.sleep(interval)
-            return http_get(
-                url=url,
-                headers=headers,
-                params=params,
-                retry=retry - 1,
-                proxy=proxy,
-                interval=interval,
-            )
+        return content if status_code == 200 else ""
+    except urllib.error.URLError:
         return ""
-    except urllib.error.URLError as e:
-        logger.debug(f"request failed, url=[{url}], message: {e.reason}")
-        return ""
-    except Exception as e:
-        logger.error(e)
+    except Exception:
         time.sleep(interval)
         return http_get(
             url=url,
@@ -117,10 +92,12 @@ def http_post(
     headers: dict = None,
     params: dict = {},
     retry: int = 3,
-) -> HTTPResponse:
-    if retry <= 0 or params is None or type(params) != dict:
-        return None
+    timeout: float = 6,
+) -> tuple[HTTPResponse, int]:
+    if params is None or type(params) != dict:
+        return None, 1
 
+    timeout, retry = max(timeout, 1), retry - 1
     if not headers:
         headers = {
             "User-Agent": USER_AGENT,
@@ -131,18 +108,31 @@ def http_post(
         request = urllib.request.Request(
             url=url, data=data, headers=headers, method="POST"
         )
-        return urllib.request.urlopen(request, timeout=15, context=CTX)
+        return urllib.request.urlopen(request, timeout=timeout, context=CTX), 0
     except urllib.error.HTTPError as e:
-        logger.debug(f"request failed, url=[{url}], code: {e.code}")
-        if e.code in [401, 404]:
-            return None
+        if retry < 0 or e.code in [400, 401, 404, 405]:
+            return None, 2
 
-        return http_post(url=url, headers=headers, params=params, retry=retry - 1)
-    except urllib.error.URLError as e:
-        logger.debug(f"request failed, url=[{url}], message: {e.reason}")
-        return None
+        return http_post(url=url, headers=headers, params=params, retry=retry)
+    except (TimeoutError, urllib.error.URLError) as e:
+        return None, 3
     except Exception:
+        if retry < 0:
+            return None, 3
         return http_post(url=url, headers=headers, params=params, retry=retry - 1)
+
+
+def http_post_noerror(
+    url: str,
+    headers: dict = None,
+    params: dict = {},
+    retry: int = 3,
+    timeout: float = 6,
+) -> HTTPResponse:
+    response, _ = http_post(
+        url=url, headers=headers, params=params, retry=retry, timeout=timeout
+    )
+    return response
 
 
 def extract_domain(url: str, include_protocal: bool = False) -> str:
