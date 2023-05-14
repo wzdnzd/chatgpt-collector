@@ -180,6 +180,13 @@ def isblank(text: str) -> bool:
     return not text or type(text) != str or not text.strip()
 
 
+def trim(text: str) -> str:
+    if not text or type(text) != str:
+        return ""
+
+    return text.strip()
+
+
 def load_dotenv() -> None:
     path = os.path.abspath(os.path.dirname(__file__))
     filename = os.path.join(path, ".env")

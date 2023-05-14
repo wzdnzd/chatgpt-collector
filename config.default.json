@@ -1,0 +1,48 @@
+{
+    "threshold": 10,
+    "scripts": {
+        "carrot#fetch": {
+            "enable": true,
+            "params": {
+                "url": ""
+            }
+        },
+        "aalib#extract": {
+            "enable": true,
+            "params": {
+                "urls": [
+                    "https://xxx",
+                    "https://xxx.com/path"
+                ]
+            }
+        }
+    },
+    "pages": {
+        "": {
+            "enable": true,
+            "params": {
+                "regex": "",
+                "urlpath": "",
+                "mode": ""
+            }
+        }
+    },
+    "blacklist": {
+        "auto": false,
+        "address": "blockedsites"
+    },
+    "persists": {
+        "candidates": {
+            "fileid": "",
+            "folderid": ""
+        },
+        "availables": {
+            "fileid": "",
+            "folderid": "",
+            "username": ""
+        },
+        "blockedsites": {
+            "fileid": ""
+        }
+    }
+}

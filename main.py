@@ -191,7 +191,9 @@ def crawl_pages(tasks: dict) -> list[str]:
         include = v.get("include", "").strip()
         exclude = v.get("exclude", "").strip()
         regex = v.get("regex", "").strip()
-        params.append([k, include, exclude, regex])
+        urlpath = v.get("urlpath", "").strip()
+        mode = v.get("mode", "").strip()
+        params.append([k, include, exclude, regex, urlpath, mode])
 
     if not params:
         return []
@@ -205,9 +207,7 @@ def crawl_pages(tasks: dict) -> list[str]:
         pool.close()
 
         links = list(set(list(itertools.chain.from_iterable(results))))
-        logger.info(
-            f"[PagesCrawl] crawl from pages finished, found {len(links)} sites: {links}"
-        )
+        logger.info(f"[PagesCrawl] crawl from pages finished, found {len(links)} sites")
         return links
     except:
         traceback.print_exc()
@@ -215,7 +215,12 @@ def crawl_pages(tasks: dict) -> list[str]:
 
 
 def crawl_single_page(
-    url: str, include: str, exclude: str = "", regex: str = ""
+    url: str,
+    include: str,
+    exclude: str = "",
+    regex: str = "",
+    uripath: str = "",
+    mode: str = "",
 ) -> list[str]:
     if not utils.isurl(url=url) or (utils.isblank(include) and utils.isblank(regex)):
         logger.error(
@@ -255,7 +260,29 @@ def crawl_single_page(
         logger.info(
             f"[PageInfo] crawl page {url} finished, found {len(sites)} sites: {sites}"
         )
-        return sites
+
+        uripath, mode = utils.trim(uripath).lower(), utils.trim(mode).lower()
+
+        # regular url path
+        if not re.match(
+            "^(\/?\w+)+((\.)?\w+|\/)(\?(\w+=[\w\d]+(&\w+=[\w\d]+)*)+){0,1}$", uripath
+        ):
+            uripath = ""
+        mode = "" if not mode else parse.urlencode({"mode": mode})
+        if not uripath and not mode:
+            return sites
+
+        collections = []
+        for site in sites:
+            if uripath:
+                site = parse.urljoin(base=site, url=uripath)
+            if mode:
+                symbol = "&" if "?" in site else "?"
+                site = f"{site}{symbol}{mode}"
+
+            collections.append(site)
+
+        return collections
     except:
         logger.error(f"[PageError] occur error when crawl site=[{url}]")
         return []
