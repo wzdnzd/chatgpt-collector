@@ -408,23 +408,24 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
         content = utils.http_get(url=pushtool.raw_url(v))
         if not content:
             continue
-        if k != "candidates":
+        if k == "availables":
             for site in content.split(","):
                 if not utils.isblank(site):
                     candidates[site] = {"defeat": 0}
 
             continue
-
-        try:
-            candidates.update(json.loads(content))
-        except:
-            logger.error("[CandidatesError] fetch candidates failed")
+        elif k == "candidates":
+            try:
+                candidates.update(json.loads(content))
+            except:
+                logger.error("[CandidatesError] fetch candidates failed")
 
     return candidates
 
 
 def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -> dict:
-    if not persists or not blackconf:
+    disable = os.environ.get("DISABLE_BLACKLIST", "") in ["true", "1"]
+    if disable or not persists or not blackconf:
         return {}
 
     address, autoadd = blackconf.get("address", ""), blackconf.get("auto", False)

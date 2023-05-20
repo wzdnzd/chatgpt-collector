@@ -209,7 +209,11 @@ def url_complete(site: str) -> str:
     if isblank(site):
         return ""
 
-    if not (site.startswith("https://") or site.startswith("http://")):
-        site = f"https://{site}"
+    if not site.startswith("https://"):
+        # force use https protocal
+        if site.startswith("http://"):
+            site = site.replace("http://", "https://")
+        else:
+            site = f"https://{site}"
 
     return site
