@@ -772,7 +772,11 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
                 continue
 
             # return directly without further analysis
-            match = re.search("ChatGPT", content, flags=re.I)
+            keywords = "ChatGPT"
+            if "text/event-stream" in content_type:
+                keywords += "|finish_reason|chatcmpl-"
+
+            match = re.search(keywords, content, flags=re.I)
             return match is not None, link
 
             # if not re.search("ChatGPT", content, flags=re.I):
