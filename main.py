@@ -35,6 +35,7 @@ class GPTProvider(Enum):
 /api: https://github.com/ourongxing/chatgpt-vercel/blob/main/src/routes/api/index.ts
 """
 COMMON_PATH_MODE = {
+    "/api/openai/v1/chat/completions": [GPTProvider.OPENAI],
     "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
     "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
     "/api/chat": [GPTProvider.PROXIEDOPENAI, GPTProvider.OPENAI, GPTProvider.AZURE],
@@ -84,6 +85,12 @@ HEADERS = {
     "User-Agent": utils.USER_AGENT,
 }
 
+# available group name
+AVAILABLES = "availables"
+
+# candidate group name
+CANDIDATES = "candidates"
+
 
 def query_provider(name: str) -> GPTProvider:
     if not name:
@@ -126,7 +133,7 @@ def execute_script(script: str, params: dict = {}) -> list[str]:
 
         endtime = time.time()
         logger.info(
-            "[ScriptInfo] finished execute script: scripts.{}, cost: {:.3}s".format(
+            "[ScriptInfo] finished execute script: scripts.{}, cost: {:.2f}s".format(
                 script, endtime - starttime
             )
         )
@@ -333,6 +340,19 @@ def process(url: str) -> None:
             params = [
                 [v, tasks.get("persists").get(k), k, 5] for k, v in data.items() if v
             ]
+
+            # stream sites
+            isolation = tasks.get("stream", {}).get("isolation", False)
+            name = tasks.get("stream", {}).get("persist", "")
+            fastpersist = tasks.get("persists").get(name, {})
+            if isolation and fastpersist:
+                sites = data.get(AVAILABLES, "")
+                fastly = [x for x in sites.split(",") if "stream=true" in x]
+                logger.info(f"[ProcessInfo] collect {len(fastly)} faster sites")
+                text = ",".join(fastly)
+                if text:
+                    params.append([text, fastpersist, name, 5])
+
             cpu_count = multiprocessing.cpu_count()
             num = len(params) if len(params) <= cpu_count else cpu_count
 
@@ -357,7 +377,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
         if pushtool.validate(v):
             groups[k] = v
 
-    if "candidates" not in groups or "availables" not in groups:
+    if CANDIDATES not in groups or AVAILABLES not in groups:
         logger.error(
             "[ConfigError] persists must include 'availables' and 'candidates'"
         )
@@ -405,16 +425,20 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
 
     candidates = {}
     for k, v in persists.items():
+        if k != AVAILABLES and k != CANDIDATES:
+            continue
+
         content = utils.http_get(url=pushtool.raw_url(v))
         if not content:
             continue
-        if k == "availables":
+
+        if k == AVAILABLES:
             for site in content.split(","):
                 if not utils.isblank(site):
                     candidates[site] = {"defeat": 0}
 
             continue
-        elif k == "candidates":
+        elif k == CANDIDATES:
             try:
                 candidates.update(json.loads(content))
             except:
@@ -429,7 +453,7 @@ def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -
         return {}
 
     address, autoadd = blackconf.get("address", ""), blackconf.get("auto", False)
-    if address not in persists or address in ["availables", "candidates"]:
+    if address not in persists or address in [AVAILABLES, CANDIDATES]:
         return {}
 
     url = pushtool.raw_url(persists.get(address))
@@ -548,8 +572,8 @@ def batch_probe(
             )
 
         data = {
-            "availables": ",".join(availables),
-            "candidates": json.dumps(dict(potentials)),
+            AVAILABLES: ",".join(availables),
+            CANDIDATES: json.dumps(dict(potentials)),
         }
 
         persist = blacklist.get("persist", "")
@@ -773,7 +797,7 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
 
             # return directly without further analysis
             keywords = "ChatGPT"
-            if "text/event-stream" in content_type:
+            if "text/event-stream" in content_type and content.startswith("data:"):
                 link = f"{link}&stream=true"
                 keywords += "|finish_reason|chatcmpl-"
 

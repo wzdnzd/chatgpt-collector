@@ -1,5 +1,4 @@
 import itertools
-import multiprocessing
 import re
 
 import utils
@@ -16,13 +15,7 @@ def extract(params: dict) -> list[str]:
         return []
 
     try:
-        cpu_count = multiprocessing.cpu_count()
-        num = len(urls) if len(urls) <= cpu_count else cpu_count
-
-        pool = multiprocessing.Pool(num)
-        results = pool.map(extract_one, urls)
-        pool.close()
-
+        results = utils.multi_thread_collect(extract_one, urls)
         links = list(set(list(itertools.chain.from_iterable(results))))
         logger.info(f"[AALIB] crawl finished, found {len(links)} sites: {links}")
         return links

@@ -5,10 +5,12 @@
 
 import gzip
 import json
+import multiprocessing
 import os
 import re
 import ssl
 import time
+import typing
 import urllib
 import urllib.parse
 import urllib.request
@@ -217,3 +219,25 @@ def url_complete(site: str) -> str:
             site = f"https://{site}"
 
     return site
+
+
+def multi_thread_collect(func: typing.Callable, params: list) -> list:
+    try:
+        from collections.abc import Iterable
+    except ImportError:
+        from collections import Iterable
+
+    if not func or not params:
+        return []
+
+    cpu_count = multiprocessing.cpu_count()
+    num = len(params) if len(params) <= cpu_count else cpu_count
+
+    pool = multiprocessing.Pool(num)
+    if isinstance(params, Iterable):
+        results = pool.starmap(func, params)
+    else:
+        results = pool.map(func, params)
+    pool.close()
+
+    return results

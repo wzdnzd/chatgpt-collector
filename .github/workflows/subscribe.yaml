@@ -25,11 +25,14 @@ jobs:
         with:
           ref: main
 
-      - name: Install
+      - name: Prepare
         uses: actions/setup-python@v2
         with:
           python-version: "3.x"
           architecture: "x64"
+
+      - name: InstallDependences
+        run: pip3 install cryptography
 
       - name: Subscribe
         run: python -u ./main.py
