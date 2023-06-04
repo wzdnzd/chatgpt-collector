@@ -325,12 +325,16 @@ def process(url: str) -> None:
                 pushtool=pushtool,
             )
 
+            # strictly conforms to the event-stream standard
+            strict = tasks.get("stream", {}).get("strict", True)
+
             data = batch_probe(
                 urls=urls,
                 candidates=candidates,
                 threshold=tasks.get("threshold"),
                 tolerance=tasks.get("tolerance"),
                 blacklist=blacklist,
+                strict=True,
             )
 
             if not data:
@@ -516,6 +520,7 @@ def batch_probe(
     threshold: int,
     tolerance: int,
     blacklist: dict = {},
+    strict: bool = True,
 ) -> dict:
     if not urls and not candidates:
         return {}
@@ -551,6 +556,7 @@ def batch_probe(
                     potentials,
                     semaphore,
                     tolerance,
+                    strict,
                 ),
             )
             p.start()
@@ -595,13 +601,14 @@ def check(
     potentials: DictProxy,
     semaphore: Semaphore,
     tolerance: int,
+    strict: bool,
 ) -> None:
     try:
         # record start time
         starttime = time.time()
 
         # detect connectivity
-        status, apipath = judge(url=url, retry=2, tolerance=tolerance)
+        status, apipath = judge(url=url, strict=strict, retry=2, tolerance=tolerance)
 
         # record spend time
         cost = time.time() - starttime
@@ -716,7 +723,9 @@ def read_response(response: HTTPResponse, key: str = "", expected: int = 200) ->
         return None
 
 
-def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
+def judge(
+    url: str, strict: bool = True, retry: int = 2, tolerance: int = 3
+) -> tuple[bool, str]:
     """
     Judge whether the website is valid and sniff api path
     """
@@ -800,7 +809,7 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
             # return directly without further analysis
             keywords = "ChatGPT"
             if "text/event-stream" in content_type and verify_eventstream(
-                content=content
+                content=content, strict=strict
             ):
                 link = f"{link}&stream=true"
                 keywords += "|finish_reason|chatcmpl-"
@@ -848,7 +857,7 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
     return False, ""
 
 
-def verify_eventstream(content: str) -> bool:
+def verify_eventstream(content: str, strict: bool = True) -> bool:
     content, flag = utils.trim(content), "data:"
     lines = content.split("\n")
 
@@ -857,13 +866,14 @@ def verify_eventstream(content: str) -> bool:
         if not line:
             continue
 
-        if not line.startswith(flag):
+        texts = line.split(sep=flag, maxsplit=1)
+        if strict and len(texts) != 2:
             return False
-
-        text = line.split(sep=flag, maxsplit=1)[1]
 
         # ignore the last line because usually it is "data: [DONE]"
         if i != len(lines) - 1:
+            text = texts[1] if len(texts) == 2 else texts[0]
+
             try:
                 _ = json.loads(text)
             except:
