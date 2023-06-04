@@ -341,14 +341,16 @@ def process(url: str) -> None:
                 [v, tasks.get("persists").get(k), k, 5] for k, v in data.items() if v
             ]
 
-            # stream sites
+            # support event-stream sites
             isolation = tasks.get("stream", {}).get("isolation", False)
             name = tasks.get("stream", {}).get("persist", "")
             fastpersist = tasks.get("persists").get(name, {})
             if isolation and fastpersist:
                 sites = data.get(AVAILABLES, "")
                 fastly = [x for x in sites.split(",") if "stream=true" in x]
-                logger.info(f"[ProcessInfo] collect {len(fastly)} faster sites")
+                logger.info(
+                    f"[ProcessInfo] collected {len(fastly)} faster sites that support event-stream"
+                )
                 text = ",".join(fastly)
                 if text:
                     params.append([text, fastpersist, name, 5])
@@ -797,7 +799,9 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
 
             # return directly without further analysis
             keywords = "ChatGPT"
-            if "text/event-stream" in content_type and content.startswith("data:"):
+            if "text/event-stream" in content_type and verify_eventstream(
+                content=content
+            ):
                 link = f"{link}&stream=true"
                 keywords += "|finish_reason|chatcmpl-"
 
@@ -842,6 +846,29 @@ def judge(url: str, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
             )
 
     return False, ""
+
+
+def verify_eventstream(content: str) -> bool:
+    content, flag = utils.trim(content), "data:"
+    lines = content.split("\n")
+
+    for i in range(len(lines) - 1):
+        line = utils.trim(lines[i])
+        if not line:
+            continue
+
+        if not line.startswith(flag):
+            return False
+
+        text = line.split(sep=flag, maxsplit=1)[1]
+
+        # ignore the last line because usually it is "data: [DONE]"
+        if i != len(lines) - 1:
+            try:
+                _ = json.loads(text)
+            except:
+                return False
+    return True
 
 
 if __name__ == "__main__":

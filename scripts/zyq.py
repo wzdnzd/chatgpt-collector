@@ -30,6 +30,7 @@ def collect(params: dict) -> list[str]:
     prefix, regex = "https://api.zhaoyeqing.cn", r"baseURL:\"(https://.*?)\""
     group = re.findall(regex, content, flags=re.I)
     prefix = utils.trim(group[0]) if group else prefix
+    # https://api.zhaoyeqing.cn/site/list/chatgpt
     url = f"{prefix}/site/list/chatgpt"
 
     # fetch json data
@@ -39,6 +40,8 @@ def collect(params: dict) -> list[str]:
         return []
 
     types = params.get("types", [])
+    include = utils.trim(params.get("include", ""))
+    exclude = utils.trim(params.get("exclude", ""))
     sitetypes = set(types) if types else None
     try:
         data = json.loads(content)
@@ -50,10 +53,20 @@ def collect(params: dict) -> list[str]:
             website = item.get("web_url", "")
             try:
                 url = utils.url_complete(site=cipher.decrypt(website))
-                if url:
-                    sites.add(url)
+                if not url:
+                    continue
+
+                if include and not re.search(include, url, re.I):
+                    continue
+                else:
+                    if exclude and re.search(exclude, url, re.I):
+                        continue
+
+                sites.add(url)
             except:
-                logger.warn(f"[ZYQ] invalid web url: {website}")
+                logger.warn(
+                    f"[ZYQ] invalid web url: {website} or include: {include} or exclude: {exclude} is invalid"
+                )
     except:
         logger.error(f"[ZYQ] occue error when parse data")
 
