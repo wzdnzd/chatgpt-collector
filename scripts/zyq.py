@@ -14,22 +14,26 @@ def collect(params: dict) -> list[str]:
         )
     )
 
+    salt = utils.trim(params.get("passphrase", ""))
+    prefix = "https://api.zhaoyeqing.cn"
+
     content = utils.http_get(url=url)
     if not content:
-        logger.error(f"[ZYQ] failed to fetch content from url: {url}")
-        return []
+        logger.warn(f"[ZYQ] failed to fetch content from url: {url}")
+    else:
+        regex = r"AES\.decrypt\(e\.web_url,\"(.*?)\"\)\.toString"
+        match = re.findall(regex, content, flags=re.I)
+        passphrase = match[0] if match else salt
 
-    salt = utils.trim(params.get("passphrase", ""))
-    regex = r"AES\.decrypt\(e\.web_url,\"(.*?)\"\)\.toString"
-    match = re.findall(regex, content, flags=re.I)
-    passphrase = match[0] if match else salt
+        pattern = r"baseURL:\"(https://.*?)\""
+        group = re.findall(pattern, content, flags=re.I)
+        domain = utils.trim(group[0]) if group else ""
+        prefix = domain if domain else prefix
+
     if utils.isblank(passphrase):
         logger.error(f"[ZYQ] cannot decrypt due to passphrase is empty")
         return []
 
-    prefix, regex = "https://api.zhaoyeqing.cn", r"baseURL:\"(https://.*?)\""
-    group = re.findall(regex, content, flags=re.I)
-    prefix = utils.trim(group[0]) if group else prefix
     # https://api.zhaoyeqing.cn/site/list/chatgpt
     url = f"{prefix}/site/list/chatgpt"
 

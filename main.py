@@ -861,7 +861,7 @@ def verify_eventstream(content: str, strict: bool = True) -> bool:
     content, flag = utils.trim(content), "data:"
     lines = content.split("\n")
 
-    for i in range(len(lines) - 1):
+    for i in range(len(lines)):
         line = utils.trim(lines[i])
         if not line:
             continue
