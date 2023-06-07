@@ -8,13 +8,9 @@ from logger import logger
 
 def collect(params: dict) -> list[str]:
     params = {} if type(params) != dict else params
-    url = utils.trim(
-        params.get(
-            "url", "https://chatgpt-site.zhaoyeqing.cn/static/js/main.39192abd.js"
-        )
-    )
+    url = utils.trim(params.get("url", ""))
 
-    salt = utils.trim(params.get("passphrase", ""))
+    passphrase = utils.trim(params.get("passphrase", ""))
     prefix = "https://api.zhaoyeqing.cn"
 
     content = utils.http_get(url=url)
@@ -23,7 +19,7 @@ def collect(params: dict) -> list[str]:
     else:
         regex = r"AES\.decrypt\(e\.web_url,\"(.*?)\"\)\.toString"
         match = re.findall(regex, content, flags=re.I)
-        passphrase = match[0] if match else salt
+        passphrase = match[0] if match else passphrase
 
         pattern = r"baseURL:\"(https://.*?)\""
         group = re.findall(pattern, content, flags=re.I)
