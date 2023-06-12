@@ -334,7 +334,7 @@ def process(url: str) -> None:
                 threshold=tasks.get("threshold"),
                 tolerance=tasks.get("tolerance"),
                 blacklist=blacklist,
-                strict=True,
+                strict=strict,
             )
 
             if not data:
