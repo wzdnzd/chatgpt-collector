@@ -119,7 +119,7 @@ def requestOnce(
         data = json.loads(content).get("data", [])
         cipher = AESCipher(passphrase=passphrase)
         for item in data:
-            if not item or (sitetypes and item.get("key", "") not in sitetypes):
+            if not item or (sitetypes and item.get("cn_key", "") not in sitetypes):
                 continue
 
             website = item.get("web_url", "")

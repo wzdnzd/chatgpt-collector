@@ -218,7 +218,7 @@ def url_complete(site: str) -> str:
         else:
             site = f"https://{site}"
 
-    return site
+    return extract_domain(url=site, include_protocal=True)
 
 
 def multi_thread_collect(func: typing.Callable, params: list) -> list:
