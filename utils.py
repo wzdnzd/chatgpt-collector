@@ -7,14 +7,16 @@ import gzip
 import json
 import multiprocessing
 import os
+import random
 import re
 import ssl
+import string
 import time
 import typing
 import urllib
 import urllib.parse
 import urllib.request
-from http.client import HTTPResponse
+from http.client import HTTPResponse, HTTPMessage
 
 from logger import logger
 from urlvalidator import isurl
@@ -24,6 +26,18 @@ CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def http_error_302(
+        self,
+        req: urllib.request.Request,
+        fp: typing.IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+    ) -> typing.IO[bytes]:
+        return fp
 
 
 def http_get(
@@ -95,6 +109,7 @@ def http_post(
     params: dict = {},
     retry: int = 3,
     timeout: float = 6,
+    allow_redirects: bool = True,
 ) -> tuple[HTTPResponse, int]:
     if params is None or type(params) != dict:
         return None, 1
@@ -110,18 +125,34 @@ def http_post(
         request = urllib.request.Request(
             url=url, data=data, headers=headers, method="POST"
         )
-        return urllib.request.urlopen(request, timeout=timeout, context=CTX), 0
+        if not allow_redirects:
+            return urllib.request.urlopen(request, timeout=timeout, context=CTX), 0
+
+        opener = urllib.request.build_opener(NoRedirect)
+        return opener.open(request, timeout=timeout), 0
     except urllib.error.HTTPError as e:
         if retry < 0 or e.code in [400, 401, 404, 405]:
             return None, 2
 
-        return http_post(url=url, headers=headers, params=params, retry=retry)
+        return http_post(
+            url=url,
+            headers=headers,
+            params=params,
+            retry=retry,
+            allow_redirects=allow_redirects,
+        )
     except (TimeoutError, urllib.error.URLError) as e:
         return None, 3
     except Exception:
         if retry < 0:
             return None, 3
-        return http_post(url=url, headers=headers, params=params, retry=retry - 1)
+        return http_post(
+            url=url,
+            headers=headers,
+            params=params,
+            retry=retry - 1,
+            allow_redirects=allow_redirects,
+        )
 
 
 def http_post_noerror(
@@ -130,9 +161,15 @@ def http_post_noerror(
     params: dict = {},
     retry: int = 3,
     timeout: float = 6,
+    allow_redirects: bool = True,
 ) -> HTTPResponse:
     response, _ = http_post(
-        url=url, headers=headers, params=params, retry=retry, timeout=timeout
+        url=url,
+        headers=headers,
+        params=params,
+        retry=retry,
+        timeout=timeout,
+        allow_redirects=allow_redirects,
     )
     return response
 
@@ -241,3 +278,17 @@ def multi_thread_collect(func: typing.Callable, params: list) -> list:
     pool.close()
 
     return results
+
+
+def random_chars(length: int, punctuation: bool = False) -> str:
+    length = max(length, 1)
+    if punctuation:
+        chars = "".join(
+            random.sample(
+                string.ascii_letters + string.digits + string.punctuation, length
+            )
+        )
+    else:
+        chars = "".join(random.sample(string.ascii_letters + string.digits, length))
+
+    return chars
