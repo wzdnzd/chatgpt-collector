@@ -125,7 +125,7 @@ def http_post(
         request = urllib.request.Request(
             url=url, data=data, headers=headers, method="POST"
         )
-        if not allow_redirects:
+        if allow_redirects:
             return urllib.request.urlopen(request, timeout=timeout, context=CTX), 0
 
         opener = urllib.request.build_opener(NoRedirect)
@@ -150,7 +150,7 @@ def http_post(
             url=url,
             headers=headers,
             params=params,
-            retry=retry - 1,
+            retry=retry,
             allow_redirects=allow_redirects,
         )
 
