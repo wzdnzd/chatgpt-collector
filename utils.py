@@ -16,7 +16,7 @@ import typing
 import urllib
 import urllib.parse
 import urllib.request
-from http.client import HTTPResponse, HTTPMessage
+from http.client import HTTPMessage, HTTPResponse
 
 from logger import logger
 from urlvalidator import isurl
@@ -89,8 +89,6 @@ def http_get(
             content = gzip.decompress(content).decode("utf8")
 
         return content if status_code == 200 else ""
-    except urllib.error.URLError:
-        return ""
     except Exception:
         time.sleep(interval)
         return http_get(
@@ -259,11 +257,6 @@ def url_complete(site: str) -> str:
 
 
 def multi_thread_collect(func: typing.Callable, params: list) -> list:
-    try:
-        from collections.abc import Iterable
-    except ImportError:
-        from collections import Iterable
-
     if not func or not params:
         return []
 
@@ -271,7 +264,7 @@ def multi_thread_collect(func: typing.Callable, params: list) -> list:
     num = len(params) if len(params) <= cpu_count else cpu_count
 
     pool = multiprocessing.Pool(num)
-    if isinstance(params, Iterable):
+    if type(params[0]) == list or type(params[0]) == tuple:
         results = pool.starmap(func, params)
     else:
         results = pool.map(func, params)

@@ -59,7 +59,7 @@ def collect(params: dict) -> list[str]:
     links, content = partition(url=url, peer=peer)
     sites = []
     if content:
-        sites = requestOnce(
+        sites = request_once(
             url="",
             passphrase=passphrase,
             include=include,
@@ -69,7 +69,7 @@ def collect(params: dict) -> list[str]:
         )
     if links:
         tasks = [[x, passphrase, include, exclude, sitetypes, ""] for x in links]
-        results = utils.multi_thread_collect(func=requestOnce, params=tasks)
+        results = utils.multi_thread_collect(func=request_once, params=tasks)
         sites = list(set(list(itertools.chain.from_iterable(results))))
 
     logger.info(f"[ZYQ] crawl finished, found {len(sites)} sites")
@@ -97,7 +97,7 @@ def partition(url: str, peer: int) -> tuple[list, str]:
     return links, content
 
 
-def requestOnce(
+def request_once(
     url: str,
     passphrase: str,
     include: str = "",
