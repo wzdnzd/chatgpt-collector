@@ -30,6 +30,18 @@ OWNER = "Yidadaa"
 # github repository name
 REPO = "ChatGPT-Next-Web"
 
+# deployments filepath
+DEPLOYMENTS_FILE = os.path.join(utils.PATH, "data", "deployments.txt")
+
+# domains filepath
+MATERIAL_FILE = os.path.join(utils.PATH, "data", "material.txt")
+
+# candidates filepath
+CANDIDATES_FILE = os.path.join(utils.PATH, "data", "candidates.txt")
+
+# result filepath
+SITES_FILE = os.path.join(utils.PATH, "data", "sites.txt")
+
 # request headers
 DEFAULT_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -42,18 +54,24 @@ GITHUB_TOKEN = utils.trim(os.environ.get("GITHUB_TOKEN", ""))
 if GITHUB_TOKEN:
     DEFAULT_HEADERS["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
+# running on local
+LOCAL_MODE = utils.trim(os.environ.get("LOCAL_MODE", "")).lower() in ["true", "1"]
 
-def last_history(url: str) -> datetime:
+
+def last_history(url: str, refresh: bool) -> datetime:
     last = datetime(year=1970, month=1, day=1)
-    content = utils.http_get(url=url) if url else ""
-    if content:
-        modified = ""
-        try:
-            modified = json.loads(content).get(LAST_MODIFIED, "")
-            if modified:
-                last = datetime.strptime(modified, DATE_FORMAT) + timedelta(minutes=-10)
-        except Exception:
-            logger.error(f"[NextWeb] invalid date format: {modified}")
+    if not refresh and url:
+        content = utils.http_get(url=url) if url else ""
+        if content:
+            modified = ""
+            try:
+                modified = json.loads(content).get(LAST_MODIFIED, "")
+                if modified:
+                    last = datetime.strptime(modified, DATE_FORMAT) + timedelta(
+                        minutes=-10
+                    )
+            except Exception:
+                logger.error(f"[NextWeb] invalid date format: {modified}")
 
     return last
 
@@ -79,21 +97,25 @@ def query_forks_count(retry: int = 3) -> int:
         return -1
 
 
-def list_deployments(history: str) -> list[str]:
-    last = last_history(url=history)
+def list_deployments(history: str, sort: str = "newest", refresh=False) -> list[str]:
+    last = last_history(history, refresh)
     count, peer = query_forks_count(retry=3), 100
     total = int(math.ceil(count / peer))
 
+    # see: https://docs.github.com/en/rest/repos/forks?apiVersion=2022-11-28
+    if sort not in ["newest", "oldest", "stargazers", "watchers"]:
+        sort = "newest"
+
     # concurrent
     if last.year == 1970:
-        tasks = [[x, last, peer] for x in range(1, total + 1)]
+        tasks = [[x, last, peer, sort] for x in range(1, total + 1)]
         results = utils.multi_thread_collect(func=query_deployments_page, params=tasks)
         return list(itertools.chain.from_iterable([x[0] for x in results]))
 
     # serial
     deployments, over, page = [], False, 1
     while not over and page <= total:
-        array, over = query_deployments_page(page=page, last=last, peer=peer)
+        array, over = query_deployments_page(page=page, last=last, peer=peer, sort=sort)
         deployments.extend(array)
         page += 1
 
@@ -127,6 +149,9 @@ def parse_site(
         logger.error(
             f"[NextWeb] failed to parse target url due to cannot query deployments, message: {content}"
         )
+
+    if LOCAL_MODE and domain:
+        utils.write_file(filename=MATERIAL_FILE, lines=domain, overwrite=False)
 
     return domain
 
@@ -166,13 +191,13 @@ def query_deployment_status(url: str) -> str:
 
 
 def query_deployments_page(
-    page: int, last: datetime, peer: int = 100
+    page: int, last: datetime, peer: int = 100, sort: str = "newest"
 ) -> tuple[list[str], bool]:
     if page <= 0 or not last:
         return [], False
 
     peer = min(max(peer, 1), 100)
-    url = f"{GITHUB_API}/repos/{OWNER}/{REPO}/forks?sort=newest&per_page={peer}&page={page}"
+    url = f"{GITHUB_API}/repos/{OWNER}/{REPO}/forks?sort={sort}&per_page={peer}&page={page}"
     deployments, over, starttime = list(), False, time.time()
 
     content = utils.http_get(url=url, headers=DEFAULT_HEADERS, interval=1.0)
@@ -204,7 +229,7 @@ def query_deployments_page(
     return deployments, over
 
 
-def check(url: str) -> str:
+def auth(url: str) -> str:
     if not url:
         return ""
 
@@ -217,9 +242,89 @@ def check(url: str) -> str:
     try:
         content = response.read().decode("UTF8")
         data = json.loads(content)
-        return "" if data.get("needCode", False) else url
+        target = "" if data.get("needCode", False) else url
+
+        if LOCAL_MODE and target:
+            filename = os.path.join(utils.PATH, "data", CANDIDATES_FILE)
+            utils.write_file(filename=filename, lines=target, overwrite=False)
+
+        return target
     except:
         return ""
+
+
+def check(domain: str) -> str:
+    if not domain:
+        return ""
+
+    url = f"{domain}/api/openai/dashboard/billing/subscription"
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Referer": url,
+        "User-Agent": utils.USER_AGENT,
+    }
+
+    content = utils.http_get(url=url, headers=headers, interval=0.5, retry=2)
+    try:
+        limit = json.loads(content).get("hard_limit_usd", "")
+        target = (
+            f"{domain}/api/openai/v1/chat/completions?mode=openai&stream=true"
+            if utils.is_number(limit)
+            else ""
+        )
+
+        if LOCAL_MODE and target:
+            utils.write_file(filename=SITES_FILE, lines=target, overwrite=False)
+
+        return target
+    except:
+        return ""
+
+
+def read(filepath: str) -> list[str]:
+    filepath, collections = utils.trim(filepath), []
+
+    # if file not exist, read from it's backup
+    for file in [filepath, f"{filepath}.bak"]:
+        if not file or not os.path.exists(file) or not os.path.isfile(file):
+            continue
+
+        with open(file, "r", encoding="utf8") as f:
+            for line in f.readlines():
+                collections.append(line.replace("\n", "").strip().lower())
+        break
+
+    return collections
+
+
+def load(url: str, overlay: bool) -> list[str]:
+    url, sites = utils.trim(url), []
+
+    # load local file if exist
+    sites.extend(read(SITES_FILE))
+
+    # add local existing material if necessary
+    if overlay:
+        sites.extend(read(MATERIAL_FILE))
+
+    # load remote sites
+    if url:
+        content = utils.http_get(url=url)
+        sites.extend(content.split(","))
+
+    return [utils.extract_domain(url=x, include_protocal=True) for x in sites]
+
+
+def backup_file(filepath: str) -> None:
+    if not filepath or not os.path.exists(filepath) or not os.path.isfile(filepath):
+        return
+
+    newfile = f"{filepath}.bak"
+    if os.path.exists(newfile):
+        os.remove(newfile)
+
+    os.rename(filepath, newfile)
 
 
 def collect(params: dict) -> list:
@@ -227,32 +332,94 @@ def collect(params: dict) -> list:
         return []
 
     persist = params.get("persist", {})
+    storage = {} if not persist or type(persist) != dict else persist
+
     server = os.environ.get("SUBSCRIBE_CONF", "").strip()
     pushtool = push.get_instance(domain=server)
-    if (
-        not persist
-        or type(persist) != dict
-        or not pushtool.validate(persist.get("modified", {}))
-    ):
-        logger.error(f"[NextWeb] invalid persist config, please check it and try again")
+    if not LOCAL_MODE and not pushtool.validate(storage.get("modified", {})):
+        logger.error(
+            f"[NextWeb] invalid persist config, must config modified store if running on remote"
+        )
         return []
 
-    # last modified storage config
-    store, sites = persist.get("modified", {}), []
+    # store config
+    modified, database = storage.get("modified", {}), storage.get("sites", {})
+
     # github user session
     session = utils.trim(os.environ.get("USER_SESSION", ""))
 
-    begin = datetime.utcnow().strftime(DATE_FORMAT)
-    deployments = list_deployments(history=pushtool.raw_url(push_conf=store))
-    if deployments:
-        args = [[x, 1, 5, session, True] for x in deployments]
-        collections = utils.multi_thread_collect(func=parse_site, params=args)
-        candidates = utils.multi_thread_collect(func=check, params=collections)
-        sites = [x for x in candidates if x]
+    # sort type for forks
+    sort = utils.trim(params.get("sort", "newest")).lower()
 
-    # save last modified time
-    content = json.dumps({LAST_MODIFIED: begin})
-    pushtool.push_to(content=content, push_conf=store, group="modified")
+    # check only
+    checkonly = params.get("checkonly", False)
 
-    logger.info(f"[NextWeb] crawl finished, found {len(sites)} sites")
+    # re-generate deployments
+    refresh = False if checkonly else params.get("refresh", False)
+
+    # add local existing material if necessary
+    overlay = params.get("overlay", False)
+
+    mode, starttime = "LOCAL" if LOCAL_MODE else "", time.time()
+    logger.info(
+        f"[NextWeb] start to collect sites from {OWNER}/{REPO}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
+    )
+
+    # load exists
+    candidates = [] if refresh else load(pushtool.raw_url(database), overlay)
+
+    if not checkonly:
+        begin = datetime.utcnow().strftime(DATE_FORMAT)
+
+        # TODO: if it is possible to bypass the rate limiting measures of GitHub, asynchronous requests can be used
+        deployments = list_deployments(
+            pushtool.raw_url(push_conf=modified), sort, refresh
+        )
+
+        # add local existing deployments if necessary
+        if overlay:
+            deployments.extend(read(filepath=DEPLOYMENTS_FILE))
+
+        # deduplication
+        deployments = list(set(deployments))
+        logger.info(
+            f"[NextWeb] collect completed, found {len(deployments)} deployments"
+        )
+
+        if deployments:
+            # save deployments to file
+            if LOCAL_MODE:
+                # backup exist files
+                for filename in [DEPLOYMENTS_FILE, MATERIAL_FILE, CANDIDATES_FILE]:
+                    backup_file(filepath=filename)
+
+                utils.write_file(DEPLOYMENTS_FILE, deployments, True)
+
+            args = [[x, 1, 5, session, True] for x in deployments]
+            candidates.extend(utils.multi_thread_collect(func=parse_site, params=args))
+
+        # save last modified time
+        if pushtool.validate(modified):
+            content = json.dumps({LAST_MODIFIED: begin})
+            pushtool.push_to(content=content, push_conf=modified, group="modified")
+
+    # backup sites.txt if file exists
+    backup_file(filepath=SITES_FILE)
+
+    # concurrent check
+    results = utils.multi_thread_collect(func=check, params=list(set(candidates)))
+    sites = [x for x in results if x]
+
+    # save sites
+    if sites and pushtool.validate(database):
+        success = pushtool.push_to(
+            content=",".join(sites), push_conf=database, group="sites"
+        )
+        if not success:
+            logger.error(f"[NextWeb] push {len(sites)} sites to remote failed")
+
+    cost = "{:.2f}s".format(time.time() - starttime)
+    logger.info(
+        f"[NextWeb] finished check {len(results)} candidates, got {len(sites)} avaiable sites, cost: {cost}"
+    )
     return sites

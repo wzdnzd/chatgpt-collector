@@ -125,7 +125,10 @@ venv.bak/
 .dmypy.json
 dmypy.json
 djsfx.py
+local.json
 
 # Pyre type checker
 .pyre/
 .vscode/
+
+/data

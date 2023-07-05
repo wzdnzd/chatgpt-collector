@@ -17,6 +17,7 @@ import urllib
 import urllib.parse
 import urllib.request
 from http.client import HTTPMessage, HTTPResponse
+from threading import Lock
 
 from logger import logger
 from urlvalidator import isurl
@@ -26,6 +27,10 @@ CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
+
+PATH = os.path.abspath(os.path.dirname(__file__))
+
+FILE_LOCK = Lock()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -172,7 +177,7 @@ def http_post_noerror(
     return response
 
 
-def extract_domain(url: str, include_protocal: bool = False) -> str:
+def extract_domain(url: str, include_protocal: bool = True) -> str:
     if not url:
         return ""
 
@@ -257,18 +262,23 @@ def url_complete(site: str) -> str:
 
 
 def multi_thread_collect(func: typing.Callable, params: list) -> list:
-    if not func or not params:
+    if not func or not params or type(params) != list:
         return []
 
     cpu_count = multiprocessing.cpu_count()
     num = len(params) if len(params) <= cpu_count else cpu_count
 
-    pool = multiprocessing.Pool(num)
+    pool, starttime = multiprocessing.Pool(num), time.time()
     if type(params[0]) == list or type(params[0]) == tuple:
         results = pool.starmap(func, params)
     else:
         results = pool.map(func, params)
     pool.close()
+
+    funcname = getattr(func, "__name__", repr(func))
+    logger.info(
+        f"concurrent execute [{funcname}] finished, count: {len(params)}, cost: {time.time()-starttime:.2f}s"
+    )
 
     return results
 
@@ -285,3 +295,39 @@ def random_chars(length: int, punctuation: bool = False) -> str:
         chars = "".join(random.sample(string.ascii_letters + string.digits, length))
 
     return chars
+
+
+def write_file(filename: str, lines: str | list, overwrite: bool = True) -> bool:
+    if not filename or not lines or type(lines) not in [str, list]:
+        logger.error(f"filename or lines is invalid, filename: {filename}")
+        return False
+
+    try:
+        if not isinstance(lines, str):
+            lines = "\n".join(lines)
+
+        filepath = os.path.abspath(os.path.dirname(filename))
+        os.makedirs(filepath, exist_ok=True)
+        mode = "w" if overwrite else "a"
+
+        # waitting for lock
+        FILE_LOCK.acquire(30)
+
+        with open(filename, mode, encoding="UTF8") as f:
+            f.write(lines + "\n")
+            f.flush()
+
+        # release lock
+        FILE_LOCK.release()
+
+        return True
+    except:
+        return False
+
+
+def is_number(num: str) -> bool:
+    try:
+        float(num)
+        return True
+    except ValueError:
+        return False
