@@ -200,7 +200,13 @@ def query_deployments_page(
     url = f"{GITHUB_API}/repos/{OWNER}/{REPO}/forks?sort={sort}&per_page={peer}&page={page}"
     deployments, over, starttime = list(), False, time.time()
 
-    content = utils.http_get(url=url, headers=DEFAULT_HEADERS, interval=1.0)
+    content, retry = "", 5
+    while not content and retry > 0:
+        content = utils.http_get(url=url, headers=DEFAULT_HEADERS, interval=1.0)
+        retry -= 1
+        if not content:
+            time.sleep(2)
+
     try:
         forks = json.loads(content)
         for fork in forks:
