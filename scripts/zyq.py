@@ -22,7 +22,7 @@ def collect(params: dict) -> list[str]:
     else:
         # <script defer="defer" src="/static/js/main.ad39aa59.js">
         groups = re.findall(
-            '<script\s+.*?src="(/static/js/main.[a-z0-9]+.js)">', content, flags=re.I
+            r'<script\s+.*?src="(/static/js/main.[a-z0-9]+.js)">', content, flags=re.I
         )
         if groups:
             subpath = groups[0]

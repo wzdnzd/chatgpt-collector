@@ -97,7 +97,7 @@ class PushTo(object):
         raise NotImplementedError
 
 
-class PushToPaste(PushTo):
+class PushToPasteGG(PushTo):
     """https://paste.gg"""
 
     def __init__(self, token: str) -> None:
@@ -251,7 +251,7 @@ class PushToFarsEE(PushTo):
         return f"https://devbin.dev/Raw/{fileid}"
 
 
-class PushToPastefy(PushToPaste):
+class PushToPastefy(PushToPasteGG):
     """https://pastefy.ga"""
 
     def __init__(self, token: str) -> None:
@@ -324,7 +324,37 @@ class PushToDrift(PushToPastefy):
         return response and response.getcode() in [200, 204]
 
 
-PUSHTYPE = Enum("PUSHTYPE", ("pastebin.enjoyit.ml", "pastefy.ga", "paste.gg"))
+class PushToImperial(PushToPastefy):
+    def __init__(self, token: str) -> None:
+        super().__init__(token)
+        self.name = "imperial"
+        self.api_address = "https://api.imperialb.in/v1/document"
+        self.method = "PATCH"
+
+    def raw_url(self, push_conf: dict) -> str:
+        if not self.validate(push_conf):
+            return ""
+
+        fileid = push_conf.get("fileid", "")
+        return f"https://imperialb.in/r/{fileid}"
+
+    def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
+        fileid = push_conf.get("fileid", "")
+
+        headers = {
+            "Authorization": self.token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": utils.USER_AGENT,
+        }
+
+        data = json.dumps({"id": fileid, "content": content}).encode("UTF8")
+        return self.api_address, data, headers
+
+
+PUSHTYPE = Enum(
+    "PUSHTYPE", ("pastebin.enjoyit.ml", "pastefy.ga", "paste.gg", "imperialb.in")
+)
 
 
 def get_instance(domain: str) -> PushTo:
@@ -347,4 +377,7 @@ def get_instance(domain: str) -> PushTo:
         return PushToDrift(token=token)
     elif push_type == 2:
         return PushToPastefy(token=token)
-    return PushToPaste(token=token)
+    elif push_type == 3:
+        return PushToPasteGG(token=token)
+
+    return PushToImperial(token=token)

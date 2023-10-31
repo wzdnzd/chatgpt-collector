@@ -36,7 +36,7 @@ def extract_one(url: str) -> list[str]:
         return []
 
     try:
-        groups = re.findall("<tr.*>([\s\S]*?)</tr>", content)
+        groups = re.findall(r"<tr.*>([\s\S]*?)</tr>", content)
         if not groups:
             logger.warn(f"[AALIB] cannot found any domains from [{url}]")
             return []

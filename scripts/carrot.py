@@ -39,7 +39,7 @@ def crawlone(url: str, params: dict) -> list[str]:
 
     content, candidates = utils.http_get(url=url), []
     try:
-        groups = re.findall("<tr>([\s\S]*?)</tr>", content)
+        groups = re.findall(r"<tr>([\s\S]*?)</tr>", content)
         if not groups:
             logger.warn(f"[Carrot] cannot found any domains from [{url}]")
             return []

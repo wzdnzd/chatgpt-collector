@@ -242,7 +242,7 @@ def crawl_single_page(
             return []
 
         regex = (
-            "https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
+            r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
             if utils.isblank(regex)
             else regex
         )
@@ -272,7 +272,7 @@ def crawl_single_page(
 
         # regular url path
         if not re.match(
-            "^(\/?\w+)+((\.)?\w+|\/)(\?(\w+=[\w\d]+(&\w+=[\w\d]+)*)+){0,1}$", uripath
+            r"^(\/?\w+)+((\.)?\w+|\/)(\?(\w+=[\w\d]+(&\w+=[\w\d]+)*)+){0,1}$", uripath
         ):
             uripath = ""
         mode = "" if not mode else parse.urlencode({"mode": mode})
@@ -892,7 +892,7 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=False,
-        default=os.environ.get("SUBSCRIBE_CONF", "").strip(),
+        default=os.environ.get("COLLECT_CONF", "").strip(),
         help="remote config file",
     )
 
