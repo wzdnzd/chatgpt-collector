@@ -351,7 +351,13 @@ def process(url: str) -> None:
             fastpersist = tasks.get("persists").get(name, {})
             if isolation and fastpersist:
                 sites = data.get(AVAILABLES, "")
-                fastly = [x for x in sites.split(",") if "stream=true" in x]
+                flag = os.environ.get("NO_PARAMS", "false") in ["true", "1"]
+                fastly = [
+                    x.split("?")[0] if flag else x
+                    for x in sites.split(",")
+                    if "stream=true" in x
+                ]
+
                 logger.info(
                     f"[ProcessInfo] collected {len(fastly)} faster sites that support event-stream"
                 )
