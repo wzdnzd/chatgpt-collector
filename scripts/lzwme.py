@@ -1,7 +1,8 @@
+import json
 import re
+
 import utils
 from logger import logger
-import json
 
 FILTER_KEYS = set(
     [
@@ -48,14 +49,8 @@ def fetch(params: dict) -> list[str]:
                     if site_exclude and re.search(site_exclude, u, flags=re.I):
                         continue
                     repo, title = v.get("repo", ""), v.get("title", "")
-                    if (
-                        repo
-                        and repo_exclude
-                        and re.search(repo_exclude, repo, flags=re.I)
-                    ) or (
-                        title
-                        and title_exclude
-                        and re.search(title_exclude, title, flags=re.I)
+                    if (repo and repo_exclude and re.search(repo_exclude, repo, flags=re.I)) or (
+                        title and title_exclude and re.search(title_exclude, title, flags=re.I)
                     ):
                         continue
 

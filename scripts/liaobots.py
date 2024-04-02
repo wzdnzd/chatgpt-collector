@@ -1,8 +1,9 @@
 import re
-import utils
-import urlvalidator
-from logger import logger
 from urllib import parse
+
+import urlvalidator
+import utils
+from logger import logger
 
 
 def extract(params: dict) -> list[str]:

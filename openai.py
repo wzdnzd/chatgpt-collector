@@ -10,8 +10,8 @@ import re
 from os import getenv
 from urllib.parse import parse_qs, urlparse
 
-from certifi import where
 import requests
+from certifi import where
 
 import utils
 from logger import logger
@@ -40,9 +40,7 @@ def query_sessionid(email: str, password: str) -> str:
     try:
         access_token = OpenAIAuth(email=email, password=password).auth(login_local=True)
         if utils.isblank(access_token):
-            logger.error(
-                f"[OpenAI] cannot get session due to access token is empty, email: {email}"
-            )
+            logger.error(f"[OpenAI] cannot get session due to access token is empty, email: {email}")
             return ""
 
         url = "{}/dashboard/onboarding/login".format(OPENAI_API_PRIFIX)
@@ -55,17 +53,13 @@ def query_sessionid(email: str, password: str) -> str:
             "User-Agent": utils.USER_AGENT,
         }
 
-        resp = requests.post(
-            url=url, headers=headers, json={}, allow_redirects=False, timeout=10
-        )
+        resp = requests.post(url=url, headers=headers, json={}, allow_redirects=False, timeout=10)
         status = resp.status_code if resp else 400
         if status == 200:
             session = resp.json().get("user", {}).get("session", {})
             return session.get("sensitive_id", "")
         else:
-            logger.error(
-                f"[OpenAI] invalid session response for email: {email}, status: {status}"
-            )
+            logger.error(f"[OpenAI] invalid session response for email: {email}, status: {status}")
             return ""
     except Exception as e:
         logger.error(e)
@@ -74,9 +68,7 @@ def query_sessionid(email: str, password: str) -> str:
 def create_apikey_once(email: str, password: str) -> tuple[str, bool]:
     session = query_sessionid(email=email, password=password)
     if utils.isblank(session):
-        logger.error(
-            f"[OpenAI] cannot create new secret key because of session is empty for email: {email}"
-        )
+        logger.error(f"[OpenAI] cannot create new secret key because of session is empty for email: {email}")
         return "", False
 
     try:
@@ -95,9 +87,7 @@ def create_apikey_once(email: str, password: str) -> tuple[str, bool]:
             if available <= 0:
                 granted = data.get("total_granted", 0.0)
                 used = data.get("total_used", 0.0)
-                logger.error(
-                    f"[OpenAI] account has been expired, email: {email} granted: ${granted} used: ${used}"
-                )
+                logger.error(f"[OpenAI] account has been expired, email: {email} granted: ${granted} used: ${used}")
                 return "", True
 
         url = "{}/dashboard/user/api_keys".format(OPENAI_API_PRIFIX)
@@ -107,27 +97,19 @@ def create_apikey_once(email: str, password: str) -> tuple[str, bool]:
             "name": utils.random_chars(length=8, punctuation=False),
         }
 
-        resp = requests.post(
-            url=url, headers=headers, json=payload, allow_redirects=False, timeout=10
-        )
+        resp = requests.post(url=url, headers=headers, json=payload, allow_redirects=False, timeout=10)
         if resp.status_code != 200:
-            logger.error(
-                f"[OpenAI] failed to create new secret key for email: {email}, message: {resp.text}"
-            )
+            logger.error(f"[OpenAI] failed to create new secret key for email: {email}, message: {resp.text}")
             return "", False
 
         data = resp.json()
         if data.get("result", "") != "success":
-            logger.error(
-                f"[OpenAI] failed to create new secret key for email: {email}, message: {data}"
-            )
+            logger.error(f"[OpenAI] failed to create new secret key for email: {email}, message: {data}")
             return "", False
 
         return data.get("key", {}).get("sensitive_id", ""), False
     except:
-        logger.error(
-            f"[OpenAI] cannot query and create new secret key for email: {email}"
-        )
+        logger.error(f"[OpenAI] cannot query and create new secret key for email: {email}")
         return "", False
 
 
@@ -171,12 +153,14 @@ class OpenAIAuth:
         self.mfa = mfa
         self.session = requests.Session()
         self.req_kwargs = {
-            "proxies": {
-                "http": proxy,
-                "https": proxy,
-            }
-            if proxy
-            else None,
+            "proxies": (
+                {
+                    "http": proxy,
+                    "https": proxy,
+                }
+                if proxy
+                else None
+            ),
             "verify": where(),
             "timeout": 60,
         }
@@ -196,9 +180,7 @@ class OpenAIAuth:
 
     def __do_auth(self) -> str:
         code_verifier = getenv("CODE_VERIFIER", generate_code_verifier())
-        code_challenge = getenv(
-            "CODE_CHALLENGE", generate_code_challenge(code_verifier)
-        )
+        code_challenge = getenv("CODE_CHALLENGE", generate_code_challenge(code_verifier))
 
         url = (
             "https://auth0.openai.com/authorize?client_id=pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh&audience=https%3A%2F"
@@ -214,9 +196,7 @@ class OpenAIAuth:
             "User-Agent": self.user_agent,
             "Referer": "https://ios.chat.openai.com/",
         }
-        resp = self.session.get(
-            url, headers=headers, allow_redirects=True, **self.req_kwargs
-        )
+        resp = self.session.get(url, headers=headers, allow_redirects=True, **self.req_kwargs)
 
         if resp.status_code == 200:
             try:
@@ -224,13 +204,9 @@ class OpenAIAuth:
                 state = url_params["state"][0]
                 return self.__check_email(code_verifier, state)
             except IndexError as exc:
-                raise Exception(
-                    f"[OpenAI] rate limit hit, email: {self.email}"
-                ) from exc
+                raise Exception(f"[OpenAI] rate limit hit, email: {self.email}") from exc
         else:
-            raise Exception(
-                f"[OpenAI] error request login url for email: {self.email} statue: {resp.status_code}"
-            )
+            raise Exception(f"[OpenAI] error request login url for email: {self.email} statue: {resp.status_code}")
 
     def __check_email(self, code_verifier: str, state: str) -> str:
         url = "https://auth0.openai.com/u/login/identifier?state=" + state
@@ -248,9 +224,7 @@ class OpenAIAuth:
             "webauthn-platform-available": "false",
             "action": "default",
         }
-        resp = self.session.post(
-            url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs
-        )
+        resp = self.session.post(url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs)
 
         if resp.status_code == 302:
             return self.__login(code_verifier, state)
@@ -271,9 +245,7 @@ class OpenAIAuth:
             "action": "default",
         }
 
-        resp = self.session.post(
-            url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs
-        )
+        resp = self.session.post(url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs)
         if resp.status_code == 302:
             location = resp.headers["Location"]
             if not location.startswith("/authorize/resume?"):
@@ -293,9 +265,7 @@ class OpenAIAuth:
             "Referer": ref,
         }
 
-        resp = self.session.get(
-            url, headers=headers, allow_redirects=False, **self.req_kwargs
-        )
+        resp = self.session.get(url, headers=headers, allow_redirects=False, **self.req_kwargs)
         if resp.status_code == 302:
             location = resp.headers["Location"]
             if location.startswith("/u/mfa-otp-challenge?"):
@@ -304,9 +274,7 @@ class OpenAIAuth:
 
                 return self.__mfa_auth(code_verifier, location)
 
-            if not location.startswith(
-                "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback?"
-            ):
+            if not location.startswith("com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback?"):
                 raise Exception(f"[OpenAI] login callback failed, email: {self.email}")
 
             return self.get_access_token(code_verifier, resp.headers["Location"])
@@ -326,9 +294,7 @@ class OpenAIAuth:
             "Origin": "https://auth0.openai.com",
         }
 
-        resp = self.session.post(
-            url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs
-        )
+        resp = self.session.post(url, headers=headers, data=data, allow_redirects=False, **self.req_kwargs)
         if resp.status_code == 302:
             location = resp.headers["Location"]
             if not location.startswith("/authorize/resume?"):
@@ -346,19 +312,11 @@ class OpenAIAuth:
 
         if "error" in url_params:
             error = url_params["error"][0]
-            error_description = (
-                url_params["error_description"][0]
-                if "error_description" in url_params
-                else ""
-            )
-            raise Exception(
-                f"[OpenAI] email: {self.email} {error}: {error_description}"
-            )
+            error_description = url_params["error_description"][0] if "error_description" in url_params else ""
+            raise Exception(f"[OpenAI] email: {self.email} {error}: {error_description}")
 
         if "code" not in url_params:
-            raise Exception(
-                f"[OpenAI] error get code from callback url for email: {self.email}"
-            )
+            raise Exception(f"[OpenAI] error get code from callback url for email: {self.email}")
 
         url = "https://auth0.openai.com/oauth/token"
         headers = {
@@ -371,16 +329,12 @@ class OpenAIAuth:
             "code": url_params["code"][0],
             "code_verifier": code_verifier,
         }
-        resp = self.session.post(
-            url, headers=headers, json=data, allow_redirects=False, **self.req_kwargs
-        )
+        resp = self.session.post(url, headers=headers, json=data, allow_redirects=False, **self.req_kwargs)
 
         if resp.status_code == 200:
             access_token = resp.json().get("access_token", "")
             if not access_token:
-                raise Exception(
-                    f"[OpenAI] get access token failed for email: {self.email}, maybe you need a proxy"
-                )
+                raise Exception(f"[OpenAI] get access token failed for email: {self.email}, maybe you need a proxy")
 
             return access_token
         else:
@@ -406,9 +360,7 @@ class OpenAIAuth:
         if resp.status_code == 200:
             json = resp.json()
             if "accessToken" not in json:
-                raise Exception(
-                    f"[OpenAI] get access token failed, email: {self.email}"
-                )
+                raise Exception(f"[OpenAI] get access token failed, email: {self.email}")
 
             return json["accessToken"]
         else:
@@ -420,5 +372,5 @@ def batch_create(accounts: dict) -> list[str]:
         return []
 
     tasks = [[k, v] for k, v in accounts.items() if k and v]
-    secretkeys = utils.multi_thread_collect(func=create_apikey, params=tasks)
+    secretkeys = utils.multi_thread_collect(func=create_apikey, tasks=tasks)
     return [x for x in secretkeys if x]

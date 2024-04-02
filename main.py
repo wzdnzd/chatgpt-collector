@@ -52,7 +52,7 @@ COMMON_PAYLOAD = {
     GPTProvider.OPENAI: {
         "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
         "stream": True,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-4",
         "temperature": 1,
         "presence_penalty": 0,
     },
@@ -62,8 +62,8 @@ COMMON_PAYLOAD = {
     },
     GPTProvider.PROXIEDOPENAI: {
         "model": {
-            "id": "gpt-3.5-turbo",
-            "name": "GPT-3.5",
+            "id": "gpt-4",
+            "name": "GPT-4",
             "maxLength": 12000,
             "tokenLimit": 4000,
         },
@@ -107,9 +107,7 @@ def execute_script(script: str, params: dict = {}) -> list[str]:
         # format: a.b.c#function or a-b.c#_function or a#function and so on
         regex = r"^([a-zA-Z0-9_]+|([0-9a-zA-Z_]+([a-zA-Z0-9_\-]+)?\.)+)[a-zA-Z0-9_\-]+#[a-zA-Z_]+[0-9a-zA-Z_]+$"
         if not re.match(regex, script):
-            logger.info(
-                f"[ScriptError] script execute error because script: {script} is invalidate"
-            )
+            logger.info(f"[ScriptError] script execute error because script: {script} is invalidate")
             return []
 
         path, func_name = script.split("#", maxsplit=1)
@@ -126,29 +124,21 @@ def execute_script(script: str, params: dict = {}) -> list[str]:
 
         sites = func(params)
         if type(sites) != list:
-            logger.error(
-                f"[ScriptError] return value error, need a list, but got a {type(sites)}"
-            )
+            logger.error(f"[ScriptError] return value error, need a list, but got a {type(sites)}")
             return []
 
         endtime = time.time()
         logger.info(
-            "[ScriptInfo] finished execute script: scripts.{}, cost: {:.2f}s".format(
-                script, endtime - starttime
-            )
+            "[ScriptInfo] finished execute script: scripts.{}, cost: {:.2f}s".format(script, endtime - starttime)
         )
 
         return sites
     except:
-        logger.error(
-            f"[ScriptError] occur error run script: {script}, message: \n{traceback.format_exc()}"
-        )
+        logger.error(f"[ScriptError] occur error run script: {script}, message: \n{traceback.format_exc()}")
         return []
 
 
-def call(
-    script: str, params: dict, availables: ListProxy, semaphore: Semaphore
-) -> None:
+def call(script: str, params: dict, availables: ListProxy, semaphore: Semaphore) -> None:
     try:
         if not script:
             return
@@ -172,9 +162,7 @@ def batch_call(tasks: dict) -> list[str]:
             semaphore = multiprocessing.Semaphore(thread_num)
             for k, v in tasks.items():
                 semaphore.acquire()
-                p = multiprocessing.Process(
-                    target=call, args=(k, v, availables, semaphore)
-                )
+                p = multiprocessing.Process(target=call, args=(k, v, availables, semaphore))
                 p.start()
                 processes.append(p)
             for p in processes:
@@ -230,9 +218,7 @@ def crawl_single_page(
     mode: str = "",
 ) -> list[str]:
     if not utils.isurl(url=url) or (utils.isblank(include) and utils.isblank(regex)):
-        logger.error(
-            f"[PageError] invalid task configuration, must specify url and include or regex"
-        )
+        logger.error(f"[PageError] invalid task configuration, must specify url and include or regex")
         return []
 
     try:
@@ -242,17 +228,13 @@ def crawl_single_page(
             return []
 
         regex = (
-            r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+"
-            if utils.isblank(regex)
-            else regex
+            r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+" if utils.isblank(regex) else regex
         )
         groups = re.findall(regex, content, flags=re.I)
 
         for item in groups:
             try:
-                if not re.search(include, item, flags=re.I) or (
-                    exclude and re.search(exclude, item, flags=re.I)
-                ):
+                if not re.search(include, item, flags=re.I) or (exclude and re.search(exclude, item, flags=re.I)):
                     continue
 
                 item = utils.url_complete(item)
@@ -264,16 +246,12 @@ def crawl_single_page(
                 )
 
         sites = list(collections)
-        logger.info(
-            f"[PageInfo] crawl page {url} finished, found {len(sites)} sites: {sites}"
-        )
+        logger.info(f"[PageInfo] crawl page {url} finished, found {len(sites)} sites: {sites}")
 
         uripath, mode = utils.trim(uripath).lower(), utils.trim(mode).lower()
 
         # regular url path
-        if not re.match(
-            r"^(\/?\w+)+((\.)?\w+|\/)(\?(\w+=[\w\d]+(&\w+=[\w\d]+)*)+){0,1}$", uripath
-        ):
+        if not re.match(r"^(\/?\w+)+((\.)?\w+|\/)(\?(\w+=[\w\d]+(&\w+=[\w\d]+)*)+){0,1}$", uripath):
             uripath = ""
         mode = "" if not mode else parse.urlencode({"mode": mode})
         if not uripath and not mode:
@@ -341,9 +319,7 @@ def process(url: str) -> None:
                 logger.warning("[ProcessWarn] cannot found any domains")
                 return
 
-            params = [
-                [v, tasks.get("persists").get(k), k, 5] for k, v in data.items() if v
-            ]
+            params = [[v, tasks.get("persists").get(k), k, 5] for k, v in data.items() if v]
 
             # support event-stream sites
             isolation = tasks.get("stream", {}).get("isolation", False)
@@ -352,15 +328,9 @@ def process(url: str) -> None:
             if isolation and fastpersist:
                 sites = data.get(AVAILABLES, "")
                 flag = os.environ.get("NO_PARAMS", "false") in ["true", "1"]
-                fastly = [
-                    x.split("?")[0] if flag else x
-                    for x in sites.split(",")
-                    if "stream=true" in x
-                ]
+                fastly = [x.split("?")[0] if flag else x for x in sites.split(",") if "stream=true" in x]
 
-                logger.info(
-                    f"[ProcessInfo] collected {len(fastly)} faster sites that support event-stream"
-                )
+                logger.info(f"[ProcessInfo] collected {len(fastly)} faster sites that support event-stream")
                 text = ",".join(fastly)
                 if text:
                     params.append([text, fastpersist, name, 5])
@@ -390,9 +360,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             groups[k] = v
 
     if CANDIDATES not in groups or AVAILABLES not in groups:
-        logger.error(
-            "[ConfigError] persists must include 'availables' and 'candidates'"
-        )
+        logger.error("[ConfigError] persists must include 'availables' and 'candidates'")
         return {}
 
     scripts, pages = data.pop("scripts", {}), data.pop("pages", {})
@@ -412,9 +380,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             page_tasks[k] = v.get("params", {})
 
     if not script_tasks and not page_tasks:
-        logger.error(
-            "[ConfigError] cannot found any legal collect task from scripts and pages"
-        )
+        logger.error("[ConfigError] cannot found any legal collect task from scripts and pages")
         return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
@@ -471,15 +437,7 @@ def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -
     url = pushtool.raw_url(persists.get(address))
     content, regex = utils.http_get(url=url), ""
     if content:
-        sites = list(
-            set(
-                [
-                    x
-                    for x in content.split("\n")
-                    if not utils.isblank(x) and not x.startswith("#")
-                ]
-            )
-        )
+        sites = list(set([x for x in content.split("\n") if not utils.isblank(x) and not x.startswith("#")]))
         regex = "|".join(sites)
 
     return {"persist": address, "auto": autoadd, "regex": regex}
@@ -572,18 +530,12 @@ def batch_probe(
 
         availables = list(collections)
         cost = "{:.2f}s".format(time.time() - starttime)
-        logger.info(
-            f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites"
-        )
+        logger.info(f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites")
 
         if auto_addblack:
-            logger.warning(
-                f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {list(blacksites)}"
-            )
+            logger.warning(f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {list(blacksites)}")
         else:
-            logger.warning(
-                f"[ProbeWarn] {len(blacksites)} sites need confirmation: {list(blacksites)}"
-            )
+            logger.warning(f"[ProbeWarn] {len(blacksites)} sites need confirmation: {list(blacksites)}")
 
         data = {
             AVAILABLES: ",".join(availables),
@@ -619,11 +571,7 @@ def check(
         # record spend time
         cost = time.time() - starttime
         domain = utils.extract_domain(url=url, include_protocal=True)
-        message = (
-            "[CheckInfo] finished check, site: {} status: {} cost: {:.2f}s".format(
-                domain, status, cost
-            )
-        )
+        message = "[CheckInfo] finished check, site: {} status: {} cost: {:.2f}s".format(domain, status, cost)
         if status:
             logger.info(message)
         else:
@@ -638,7 +586,7 @@ def check(
         # response status code is 200 but return html content
         reuslt = parse.urlparse(url)
         site, path = reuslt.netloc, reuslt.path
-        if apipath:
+        if apipath and url not in candidates:
             site = site if auto_addblack else apipath
             blacksites.append(site)
             return
@@ -699,13 +647,7 @@ def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
         combinations.extend([(link, x) for x in v[1:]])
 
     # combine
-    combinations.extend(
-        [
-            (f"{apipath}{x}", y)
-            for x in COMMON_PATH_MODE.keys()
-            for y in COMMON_PAYLOAD.keys()
-        ]
-    )
+    combinations.extend([(f"{apipath}{x}", y) for x in COMMON_PATH_MODE.keys() for y in COMMON_PAYLOAD.keys()])
 
     mostlikely.extend(combinations)
     # remove duplicates and return in original order
@@ -729,9 +671,7 @@ def read_response(response: HTTPResponse, key: str = "", expected: int = 200) ->
         return None
 
 
-def judge(
-    url: str, strict: bool = True, retry: int = 2, tolerance: int = 3
-) -> tuple[bool, str]:
+def judge(url: str, strict: bool = True, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
     """
     Judge whether the website is valid and sniff api path
     """
@@ -746,18 +686,14 @@ def judge(
 
         if mode == GPTProvider.PROXIEDOPENAI and apipath.endswith("/api/chat"):
             prefix = apipath.rsplit("/", maxsplit=1)[0]
-            response = utils.http_post_noerror(
-                url=f"{prefix}/user", params={"authcode": ""}
-            )
+            response = utils.http_post_noerror(url=f"{prefix}/user", params={"authcode": ""})
             authcode = read_response(response=response, key="authCode")
 
             # x-auth-code
             if authcode and type(authcode) == str:
                 headers["x-auth-code"] = authcode
 
-            response = utils.http_post_noerror(
-                url=f"{prefix}/models", params={"key": ""}
-            )
+            response = utils.http_post_noerror(url=f"{prefix}/models", params={"key": ""})
             models = read_response(response=response, key="")
             if models and type(models) == list:
                 models.sort(key=lambda x: x.get("id", ""))
@@ -785,9 +721,7 @@ def judge(
                 logger.error(f"[JudgeError] not found any valid url path in site={url}")
                 return False, ""
             if error > tolerance:
-                logger.error(
-                    f"[JudgeError] site={url} reached maximum allowable errors: {tolerance}"
-                )
+                logger.error(f"[JudgeError] site={url} reached maximum allowable errors: {tolerance}")
                 return False, ""
 
             if not response or response.getcode() != 200:
@@ -796,16 +730,12 @@ def judge(
             link = f"{link}&auth=true" if "x-auth-code" in headers else link
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type:
-                logger.warning(
-                    f"[JudgeWarn] site=[{link}] access success but return html content"
-                )
+                logger.warning(f"[JudgeWarn] site=[{link}] access success but return html content")
                 return False, link
 
             allow_origin = response.headers.get("Access-Control-Allow-Origin", "*")
             if allow_origin and allow_origin != "*":
-                logger.warning(
-                    f"[JudeWarn] site=[{link}] access success but only support origin {allow_origin}"
-                )
+                logger.warning(f"[JudeWarn] site=[{link}] access success but only support origin {allow_origin}")
                 return False, link
 
             content = response.read().decode("UTF8")
@@ -814,9 +744,7 @@ def judge(
 
             # return directly without further analysis
             keywords = "ChatGPT"
-            if "text/event-stream" in content_type and verify_eventstream(
-                content=content, strict=strict
-            ):
+            if "text/event-stream" in content_type and verify_eventstream(content=content, strict=strict):
                 link = f"{link}&stream=true"
                 keywords += "|finish_reason|chatcmpl-"
 
@@ -856,9 +784,7 @@ def judge(
             #             f"[JudgeError] url: {apipath} mode: {mode.name} message: {content}"
             #         )
         except Exception as e:
-            logger.error(
-                f"[JudgeError] url: {apipath} mode: {mode.name} message: {str(e)}"
-            )
+            logger.error(f"[JudgeError] url: {apipath} mode: {mode.name} message: {str(e)}")
 
     return False, ""
 

@@ -30,9 +30,7 @@ def extract_one(url: str) -> list[str]:
 
     content = utils.http_get(url=url)
     if not content:
-        logger.error(
-            f"[AALIB] cannot obtain any site due to no response for url: {url}"
-        )
+        logger.error(f"[AALIB] cannot obtain any site due to no response for url: {url}")
         return []
 
     try:
@@ -46,9 +44,7 @@ def extract_one(url: str) -> list[str]:
             if "导航" in group or "可用" not in group:
                 continue
 
-            matchers = re.findall(
-                r"<a href.*target=\"_blank\">([\s\w\-:/\.]+)</a>", group
-            )
+            matchers = re.findall(r"<a href.*target=\"_blank\">([\s\w\-:/\.]+)</a>", group)
             if not matchers:
                 continue
 
@@ -57,9 +53,7 @@ def extract_one(url: str) -> list[str]:
                 if site:
                     candidates.append(site)
 
-        logger.info(
-            f"[AALIB] extract {url} finished, found {len(candidates)} sites: {candidates}"
-        )
+        logger.info(f"[AALIB] extract {url} finished, found {len(candidates)} sites: {candidates}")
         return candidates
     except:
         logger.error(f"[AALIB] occur error when extract domains from [{url}]")

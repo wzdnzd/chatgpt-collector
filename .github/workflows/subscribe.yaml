@@ -9,7 +9,7 @@ env:
   TZ: Asia/Shanghai
 
   # config
-  SUBSCRIBE_CONF: ${{ secrets.SUBSCRIBE_CONF }}
+  COLLECT_CONF: ${{ secrets.COLLECT_CONF }}
 
   # token
   PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}

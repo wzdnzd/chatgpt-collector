@@ -32,9 +32,7 @@ def fetch(params: dict) -> list[str]:
 
 def crawlone(url: str, params: dict) -> list[str]:
     if not urlvalidator.isurl(url=url) or not params or type(params) != dict:
-        logger.error(
-            f"[Carrot] invalid task configuration, url: {url} or params: {params} is empty"
-        )
+        logger.error(f"[Carrot] invalid task configuration, url: {url} or params: {params} is empty")
         return []
 
     content, candidates = utils.http_get(url=url), []
@@ -85,15 +83,11 @@ def crawlone(url: str, params: dict) -> list[str]:
         if params.get("lapse", False):
             groups = re.findall(r"\d+\.(?:\s+)?(https://.*)(?:\s+)?<br/>", content)
             for group in groups:
-                site = utils.url_complete(
-                    utils.extract_domain(group.strip().lower(), include_protocal=True)
-                )
+                site = utils.url_complete(utils.extract_domain(group.strip().lower(), include_protocal=True))
                 if site:
                     candidates.append(site)
 
-        logger.info(
-            f"[Carrot] extract url: {url} finished, found {len(candidates)} sites: {candidates}"
-        )
+        logger.info(f"[Carrot] extract url: {url} finished, found {len(candidates)} sites: {candidates}")
     except:
         logger.error(f"[Carrot] occur error when extract domains from [{url}]")
 

@@ -16,8 +16,11 @@ import typing
 import urllib
 import urllib.parse
 import urllib.request
+from concurrent import futures
 from http.client import HTTPMessage, HTTPResponse
 from threading import Lock
+
+from tqdm import tqdm
 
 from logger import logger
 from urlvalidator import isurl
@@ -26,7 +29,9 @@ CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+)
 
 PATH = os.path.abspath(os.path.dirname(__file__))
 
@@ -125,9 +130,7 @@ def http_post(
         }
     try:
         data = json.dumps(params).encode(encoding="UTF8")
-        request = urllib.request.Request(
-            url=url, data=data, headers=headers, method="POST"
-        )
+        request = urllib.request.Request(url=url, data=data, headers=headers, method="POST")
         if allow_redirects:
             return urllib.request.urlopen(request, timeout=timeout, context=CTX), 0
 
@@ -207,9 +210,7 @@ def encoding_url(url: str) -> str:
         return url
 
     # 遍历进行 punycode 编码
-    punycodes = list(
-        map(lambda x: "xn--" + x.encode("punycode").decode("utf-8"), cn_chars)
-    )
+    punycodes = list(map(lambda x: "xn--" + x.encode("punycode").decode("utf-8"), cn_chars))
 
     # 对原 url 进行替换
     for c, pc in zip(cn_chars, punycodes):
@@ -261,24 +262,61 @@ def url_complete(site: str) -> str:
     return extract_domain(url=site, include_protocal=True)
 
 
-def multi_thread_collect(func: typing.Callable, params: list) -> list:
-    if not func or not params or type(params) != list:
+def multi_process_collect(func: typing.Callable, tasks: list) -> list:
+    if not func or not tasks or type(tasks) != list:
         return []
 
     cpu_count = multiprocessing.cpu_count()
-    num = len(params) if len(params) <= cpu_count else cpu_count
+    num = len(tasks) if len(tasks) <= cpu_count else cpu_count
 
     pool, starttime = multiprocessing.Pool(num), time.time()
-    if type(params[0]) == list or type(params[0]) == tuple:
-        results = pool.starmap(func, params)
+    if type(tasks[0]) == list or type(tasks[0]) == tuple:
+        results = pool.starmap(func, tasks)
     else:
-        results = pool.map(func, params)
+        results = pool.map(func, tasks)
     pool.close()
 
     funcname = getattr(func, "__name__", repr(func))
-    logger.info(
-        f"concurrent execute [{funcname}] finished, count: {len(params)}, cost: {time.time()-starttime:.2f}s"
-    )
+    logger.info(f"concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s")
+
+    return results
+
+
+def multi_thread_collect(
+    func: typing.Callable,
+    tasks: list,
+    num_threads: int = None,
+    padding: bool = True,
+    show_progress: bool = False,
+) -> list:
+    if not func or not tasks or not isinstance(tasks, list):
+        return []
+
+    if num_threads is None or num_threads <= 0:
+        num_threads = min(len(tasks), (os.cpu_count() or 1) * 2)
+
+    results, starttime = [], time.time()
+    with futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        if isinstance(tasks[0], list) or isinstance(tasks[0], tuple):
+            collections = [executor.submit(func, *param) for param in tasks]
+        else:
+            collections = [executor.submit(func, param) for param in tasks]
+
+        items = futures.as_completed(collections)
+        if show_progress:
+            items = tqdm(items, total=len(collections), desc="Progress", leave=True)
+
+        for future in items:
+            try:
+                results.append(future.result())
+            except Exception as e:
+                logger.error(f"function execution generated an exception: {e}")
+
+                if padding:
+                    results.append(None)
+
+    funcname = getattr(func, "__name__", repr(func))
+    logger.info(f"concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s")
 
     return results
 
@@ -286,11 +324,7 @@ def multi_thread_collect(func: typing.Callable, params: list) -> list:
 def random_chars(length: int, punctuation: bool = False) -> str:
     length = max(length, 1)
     if punctuation:
-        chars = "".join(
-            random.sample(
-                string.ascii_letters + string.digits + string.punctuation, length
-            )
-        )
+        chars = "".join(random.sample(string.ascii_letters + string.digits + string.punctuation, length))
     else:
         chars = "".join(random.sample(string.ascii_letters + string.digits, length))
 

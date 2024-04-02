@@ -1,7 +1,7 @@
 import itertools
+import json
 import math
 import re
-import json
 
 import utils
 from aes import AESCipher
@@ -21,9 +21,7 @@ def collect(params: dict) -> list[str]:
         logger.warn(f"[ZYQ] failed to fetch content from url: {url}")
     else:
         # <script defer="defer" src="/static/js/main.ad39aa59.js">
-        groups = re.findall(
-            r'<script\s+.*?src="(/static/js/main.[a-z0-9]+.js)">', content, flags=re.I
-        )
+        groups = re.findall(r'<script\s+.*?src="(/static/js/main.[a-z0-9]+.js)">', content, flags=re.I)
         if groups:
             subpath = groups[0]
 
@@ -69,7 +67,7 @@ def collect(params: dict) -> list[str]:
         )
     if links:
         tasks = [[x, passphrase, include, exclude, sitetypes, ""] for x in links]
-        results = utils.multi_thread_collect(func=request_once, params=tasks)
+        results = utils.multi_thread_collect(func=request_once, tasks=tasks)
         sites = list(set(list(itertools.chain.from_iterable(results))))
 
     logger.info(f"[ZYQ] crawl finished, found {len(sites)} sites")
@@ -136,9 +134,7 @@ def request_once(
 
                 sites.add(url)
             except:
-                logger.warn(
-                    f"[ZYQ] invalid web url: {website} or include: {include} or exclude: {exclude} is invalid"
-                )
+                logger.warn(f"[ZYQ] invalid web url: {website} or include: {include} or exclude: {exclude} is invalid")
     except:
         logger.error(f"[ZYQ] occue error when parse data for url: {url}")
 

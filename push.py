@@ -23,9 +23,7 @@ class PushTo(object):
         self.method = "PUT"
         self.token = "" if not token or not isinstance(token, str) else token
 
-    def push_file(
-        self, filepath: str, push_conf: dict, group: str = "", retry: int = 5
-    ) -> bool:
+    def push_file(self, filepath: str, push_conf: dict, group: str = "", retry: int = 5) -> bool:
         if not os.path.exists(filepath) or not os.path.isfile(filepath):
             logger.error(f"[PushFileError] file {filepath} not found")
             return False
@@ -34,30 +32,20 @@ class PushTo(object):
         with open(filepath, "r", encoding="utf8") as f:
             content = f.read()
 
-        return self.push_to(
-            content=content, push_conf=push_conf, group=group, retry=retry
-        )
+        return self.push_to(content=content, push_conf=push_conf, group=group, retry=retry)
 
-    def push_to(
-        self, content: str, push_conf: dict, group: str = "", retry: int = 5
-    ) -> bool:
+    def push_to(self, content: str, push_conf: dict, group: str = "", retry: int = 5) -> bool:
         if not self.validate(push_conf=push_conf):
             logger.error(f"[PushError] push config is invalidate, domain: {self.name}")
             return False
 
-        url, data, headers = self._generate_payload(
-            content=content, push_conf=push_conf
-        )
+        url, data, headers = self._generate_payload(content=content, push_conf=push_conf)
 
         try:
-            request = urllib.request.Request(
-                url=url, data=data, headers=headers, method=self.method
-            )
+            request = urllib.request.Request(url=url, data=data, headers=headers, method=self.method)
             response = urllib.request.urlopen(request, timeout=30, context=utils.CTX)
             if self._is_success(response):
-                logger.info(
-                    f"[PushSuccess] push subscribes information to {self.name} successed, group=[{group}]"
-                )
+                logger.info(f"[PushSuccess] push subscribes information to {self.name} successed, group=[{group}]")
                 return True
             else:
                 logger.info(
@@ -83,9 +71,7 @@ class PushTo(object):
         raise NotImplementedError
 
     def _error_handler(self, group: str = "") -> None:
-        logger.error(
-            f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}"
-        )
+        logger.error(f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}")
 
     def validate(self, push_conf: dict) -> bool:
         raise NotImplementedError
@@ -113,9 +99,7 @@ class PushToPasteGG(PushTo):
         folderid = push_conf.get("folderid", "")
         fileid = push_conf.get("fileid", "")
 
-        return (
-            "" != self.token.strip() and "" != folderid.strip() and "" != fileid.strip()
-        )
+        return "" != self.token.strip() and "" != folderid.strip() and "" != fileid.strip()
 
     def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
         folderid = push_conf.get("folderid", "")
@@ -126,9 +110,7 @@ class PushToPasteGG(PushTo):
             "Content-Type": "application/json",
             "User-Agent": utils.USER_AGENT,
         }
-        data = json.dumps({"content": {"format": "text", "value": content}}).encode(
-            "UTF8"
-        )
+        data = json.dumps({"content": {"format": "text", "value": content}}).encode("UTF8")
         url = f"{self.api_address}/{folderid}/files/{fileid}"
 
         return url, data, headers
@@ -137,19 +119,12 @@ class PushToPasteGG(PushTo):
         return response and response.getcode() == 204
 
     def _error_handler(self, group: str = "") -> None:
-        logger.error(
-            f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}"
-        )
+        logger.error(f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}")
 
     def filter_push(self, push_conf: dict) -> dict:
         configs = {}
         for k, v in push_conf.items():
-            if (
-                self.token
-                and v.get("folderid", "")
-                and v.get("fileid", "")
-                and v.get("username", "")
-            ):
+            if self.token and v.get("folderid", "") and v.get("fileid", "") and v.get("username", ""):
                 configs[k] = v
 
         return configs
@@ -184,11 +159,7 @@ class PushToFarsEE(PushTo):
         return url, data, headers
 
     def validate(self, push_conf: dict) -> bool:
-        return (
-            push_conf is not None
-            and type(push_conf) == dict
-            and push_conf.get("uuid", "")
-        )
+        return push_conf is not None and type(push_conf) == dict and push_conf.get("uuid", "")
 
     def filter_push(self, push_conf: dict) -> dict:
         configs = {}
@@ -299,9 +270,7 @@ class PushToPastefy(PushToPasteGG):
             return False
 
     def _error_handler(self, group: str = "") -> None:
-        logger.error(
-            f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}"
-        )
+        logger.error(f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}")
 
     def raw_url(self, push_conf: dict) -> str:
         fileid = push_conf.get("fileid")
@@ -352,9 +321,7 @@ class PushToImperial(PushToPastefy):
         return self.api_address, data, headers
 
 
-PUSHTYPE = Enum(
-    "PUSHTYPE", ("pastebin.enjoyit.ml", "pastefy.ga", "paste.gg", "imperialb.in")
-)
+PUSHTYPE = Enum("PUSHTYPE", ("pastebin.enjoyit.ml", "pastefy.ga", "paste.gg", "imperialb.in"))
 
 
 def get_instance(domain: str) -> PushTo:
@@ -368,9 +335,7 @@ def get_instance(domain: str) -> PushTo:
 
     token = os.environ.get("PUSH_TOKEN", "").strip()
     if not token:
-        raise ValueError(
-            f"[PushError] not found 'PUSH_TOKEN' in environment variables, please check it and try again"
-        )
+        raise ValueError(f"[PushError] not found 'PUSH_TOKEN' in environment variables, please check it and try again")
 
     push_type = confirm_pushtype(url=domain)
     if push_type == 1:

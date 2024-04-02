@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from datetime import datetime
 
 import push
 import utils
@@ -14,6 +15,8 @@ def main(args: argparse.Namespace) -> None:
         "refresh": args.refresh,
         "checkonly": args.checkonly,
         "overlay": args.overlay,
+        "model": args.model,
+        "num_threads": args.num,
     }
 
     filename = utils.trim(args.persist)
@@ -35,19 +38,38 @@ def main(args: argparse.Namespace) -> None:
 
                 for k, v in storages.items():
                     if k not in ["modified", "sites"] or not pushtool.validate(v):
-                        logger.error(
-                            f"[CMD] found invalid configuration '{k}' for server: {server}"
-                        )
+                        logger.error(f"[CMD] found invalid configuration '{k}' for server: {server}")
                         return
 
                 params["persist"] = storages
-                os.environ["SUBSCRIBE_CONF"] = server
+                os.environ["COLLECT_CONF"] = server
         except:
             logger.error(f"[CMD] illegal configuration, must be JSON file")
             return
 
     os.environ["LOCAL_MODE"] = "true"
-    return nextweb.collect(params=params)
+
+    sites = nextweb.collect(params=params)
+    if sites and args.backup:
+        directory = utils.trim(args.directory)
+        if not directory:
+            directory = os.path.join(utils.PATH, "data")
+        else:
+            directory = os.path.abspath(directory)
+
+        # create directory if not exist
+        os.makedirs(directory, exist_ok=True)
+
+        filename = utils.trim(args.filename)
+        if not filename:
+            model = utils.trim(args.model) or "gpt-3.5-turbo"
+            now = datetime.now().strftime("%Y%m%d-%H%M")
+            filename = f"sites-{model}-{now}.txt"
+
+        filepath = os.path.join(directory, filename)
+        utils.write_file(filename=filepath, lines=sites, overwrite=True)
+
+        logger.info(f"[CMD] collect finished, {len(sites)} sites have been saved to {filepath}")
 
 
 if __name__ == "__main__":
@@ -55,12 +77,57 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "-b",
+        "--backup",
+        dest="backup",
+        action="store_true",
+        default=False,
+        help="backup results to a local file",
+    )
+
+    parser.add_argument(
         "-c",
         "--check",
         dest="checkonly",
         action="store_true",
         default=False,
         help="only check exists sites",
+    )
+
+    parser.add_argument(
+        "-f",
+        "--filename",
+        type=str,
+        required=False,
+        default="",
+        help="final available API save file name",
+    )
+
+    parser.add_argument(
+        "-d",
+        "--directory",
+        type=str,
+        required=False,
+        default=os.path.join(utils.PATH, "data"),
+        help="final available API save path",
+    )
+
+    parser.add_argument(
+        "-m",
+        "--model",
+        type=str,
+        required=False,
+        default="gpt-3.5-turbo",
+        help="model name to chat with",
+    )
+
+    parser.add_argument(
+        "-n",
+        "--num",
+        type=int,
+        required=False,
+        default=0,
+        help="number of concurrent threads, default twice the number of CPU",
     )
 
     parser.add_argument(
