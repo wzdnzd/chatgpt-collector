@@ -17,6 +17,8 @@ def main(args: argparse.Namespace) -> None:
         "overlay": args.overlay,
         "model": args.model,
         "num_threads": args.num,
+        "skip_check": args.nocheck,
+        "chunk": max(1, args.chunk),
     }
 
     filename = utils.trim(args.persist)
@@ -63,7 +65,7 @@ def main(args: argparse.Namespace) -> None:
         filename = utils.trim(args.filename)
         if not filename:
             model = utils.trim(args.model) or "gpt-3.5-turbo"
-            now = datetime.now().strftime("%Y%m%d-%H%M")
+            now = datetime.now().strftime("%Y%m%d%H%M")
             filename = f"sites-{model}-{now}.txt"
 
         filepath = os.path.join(directory, filename)
@@ -95,6 +97,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-d",
+        "--directory",
+        type=str,
+        required=False,
+        default=os.path.join(utils.PATH, "data"),
+        help="final available API save path",
+    )
+
+    parser.add_argument(
         "-f",
         "--filename",
         type=str,
@@ -104,12 +115,21 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-d",
-        "--directory",
-        type=str,
+        "-i",
+        "--ignore",
+        dest="nocheck",
+        action="store_true",
+        default=False,
+        help="skip check availability if true",
+    )
+
+    parser.add_argument(
+        "-k",
+        "--chunk",
+        type=int,
         required=False,
-        default=os.path.join(utils.PATH, "data"),
-        help="final available API save path",
+        default=512,
+        help="chunk size of each slice",
     )
 
     parser.add_argument(

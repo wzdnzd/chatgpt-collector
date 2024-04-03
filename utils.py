@@ -263,21 +263,36 @@ def url_complete(site: str) -> str:
 
 
 def multi_process_collect(func: typing.Callable, tasks: list) -> list:
-    if not func or not tasks or type(tasks) != list:
+    if not func or not isinstance(func, typing.Callable):
+        logger.error(f"skip execute due to func is not callable")
+        return []
+
+    if not tasks or type(tasks) != list:
+        logger.error(f"skip execute due to tasks is empty or invalid")
         return []
 
     cpu_count = multiprocessing.cpu_count()
     num = len(tasks) if len(tasks) <= cpu_count else cpu_count
 
-    pool, starttime = multiprocessing.Pool(num), time.time()
-    if type(tasks[0]) == list or type(tasks[0]) == tuple:
-        results = pool.starmap(func, tasks)
-    else:
-        results = pool.map(func, tasks)
-    pool.close()
+    starttime, results = time.time(), []
+
+    # TODO: handle KeyboardInterrupt and exit program immediately
+    with multiprocessing.Pool(num) as pool:
+        try:
+            if isinstance(tasks[0], (list, tuple)):
+                results = pool.starmap(func, tasks)
+            else:
+                results = pool.map(func, tasks)
+        except KeyboardInterrupt:
+            logger.error(f"the tasks has been cancelled and the program will exit now")
+
+            pool.terminate()
+            pool.join()
 
     funcname = getattr(func, "__name__", repr(func))
-    logger.info(f"concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s")
+    logger.info(
+        f"process concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s"
+    )
 
     return results
 
@@ -288,6 +303,7 @@ def multi_thread_collect(
     num_threads: int = None,
     padding: bool = True,
     show_progress: bool = False,
+    description: str = "",
 ) -> list:
     if not func or not tasks or not isinstance(tasks, list):
         return []
@@ -297,14 +313,17 @@ def multi_thread_collect(
 
     results, starttime = [], time.time()
     with futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        if isinstance(tasks[0], list) or isinstance(tasks[0], tuple):
+        if isinstance(tasks[0], (list, tuple)):
             collections = [executor.submit(func, *param) for param in tasks]
         else:
             collections = [executor.submit(func, param) for param in tasks]
 
         items = futures.as_completed(collections)
         if show_progress:
-            items = tqdm(items, total=len(collections), desc="Progress", leave=True)
+            description = trim(description) or "Progress"
+
+            # TODO: use p_tqdm instead of tqdm, see https://github.com/swansonk14/p_tqdm
+            items = tqdm(items, total=len(collections), desc=description, leave=True)
 
         for future in items:
             try:
@@ -316,7 +335,9 @@ def multi_thread_collect(
                     results.append(None)
 
     funcname = getattr(func, "__name__", repr(func))
-    logger.info(f"concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s")
+    logger.info(
+        f"thread concurrent execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s"
+    )
 
     return results
 

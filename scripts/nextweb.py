@@ -309,6 +309,32 @@ def check(domain: str, model: str = "gpt-3.5-turbo") -> str:
     return target
 
 
+def concurrent_check(
+    sites: list[str],
+    model: str = "gpt-3.5-turbo",
+    num_threads: int = -1,
+    show_progress: bool = False,
+    index: int = 0,
+) -> list[str]:
+    if not sites or not isinstance(sites, list):
+        logger.warning(f"[NextWeb] skip process due to lines is empty")
+        return []
+
+    model = utils.trim(model) or "gpt-3.5-turbo"
+    index = max(0, index)
+    tasks = [[x, model] for x in sites if x]
+
+    result = utils.multi_thread_collect(
+        func=check,
+        tasks=tasks,
+        num_threads=num_threads,
+        show_progress=show_progress,
+        description=f"Chunk-{index}",
+    )
+
+    return [x for x in result if x]
+
+
 def chat(
     url: str,
     headers: dict = None,
@@ -527,21 +553,31 @@ def collect(params: dict) -> list:
             content = json.dumps({LAST_MODIFIED: begin})
             pushtool.push_to(content=content, push_conf=modified, group="modified")
 
+    logger.info(f"[NextWeb] candidate target collection completed, found {len(candidates)} sites")
+
+    if params.get("skip_check", False) or not candidates:
+        logger.warning("[NextWeb] availability testing steps will be skipped")
+        return list(set(candidates))
+
     # backup sites.txt if file exists
     backup_file(filepath=SITES_FILE)
 
-    # concurrent check
+    candidates = list(set(candidates))
+    chunk = max(params.get("chunk", 256), 1)
     model = params.get("model", "") or "gpt-3.5-turbo"
-    tasks = [[x, model] for x in set(candidates)]
-    logger.info(f"[NextWeb] start to check available, sites: {len(tasks)}, model: {model}")
 
-    results = utils.multi_thread_collect(
-        func=check,
-        tasks=tasks,
-        show_progress=True,
-        num_threads=num_threads,
-    )
-    sites = [x for x in results if x]
+    logger.info(f"[NextWeb] start to check available, sites: {len(candidates)}, model: {model}")
+
+    # concurrent check
+    if len(candidates) <= chunk:
+        results = concurrent_check(sites=candidates, model=model, num_threads=num_threads, show_progress=True)
+        sites = [x for x in results if x]
+    else:
+        # sharding
+        slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
+        tasks = [[x, model, num_threads, False, 0] for x in slices]
+        results = utils.multi_process_collect(func=concurrent_check, tasks=tasks)
+        sites = [x for r in results if r for x in r if x]
 
     # save sites
     if sites and pushtool.validate(database):

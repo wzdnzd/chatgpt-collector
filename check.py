@@ -10,7 +10,14 @@ from logger import logger
 from scripts import nextweb
 
 
-def available_check(lines: str, saved_file, model: str = "gpt-3.5-turbo") -> None:
+def available_check(
+    lines: list[str],
+    saved_file,
+    model: str = "gpt-3.5-turbo",
+    num_threads: int = -1,
+    show_progress: bool = False,
+    index: int = 0,
+) -> None:
     if not lines or not isinstance(lines, list):
         logger.warning(f"[Check] skip process due to lines is empty")
         return
@@ -20,14 +27,19 @@ def available_check(lines: str, saved_file, model: str = "gpt-3.5-turbo") -> Non
         raise ValueError(f"you must specify the save file path")
 
     filepath = os.path.abspath(saved_file)
-    model = utils.trim(model) or "gpt-3.5-turbo"
+    sites = nextweb.concurrent_check(
+        sites=lines,
+        model=model,
+        num_threads=num_threads,
+        show_progress=show_progress,
+        index=index,
+    )
 
-    tasks = [[x, model] for x in lines if x]
-    result = utils.multi_thread_collect(func=nextweb.check, tasks=tasks, num_threads=64)
-    sites = [x for x in result if x]
-    if sites:
-        if not utils.write_file(filepath, sites, overwrite=False):
-            logger.error(f"[Check] save result to file {filepath} failed, sites: {sites}")
+    if not sites:
+        return
+
+    if not utils.write_file(filepath, sites, overwrite=False):
+        logger.error(f"[Check] save result to file {filepath} failed, sites: {sites}")
 
 
 def read_in_chunks(filepath: str, chunk_size: int = 100):
@@ -69,16 +81,30 @@ def main(args: argparse.Namespace) -> None:
     model = utils.trim(args.model).lower() or "gpt-3.5-turbo"
     current = datetime.now().strftime("%Y%m%d%H%M")
 
-    filename = os.path.join(utils.PATH, "data", f"availables-{model}-{current}.txt")
-    if args.overwrite and os.path.exists(filename) and os.path.isfile(filename):
-        os.remove(filename)
+    result = utils.trim(args.result)
+    if not result:
+        result = f"availables-{model}-{current}.txt"
+
+    dest = os.path.abspath(os.path.join(utils.PATH, "data", result))
+
+    if args.overwrite and os.path.exists(dest) and os.path.isfile(dest):
+        os.remove(dest)
 
     try:
-        chunk_size, total = 512, count_lines(source)
-        count = (total + chunk_size - 1) // chunk_size
+        size, total = max(args.chunk, 1), count_lines(source)
+        count = (total + size - 1) // size
+        num_processes, num_threads = args.process, args.thread
 
-        for chunk in tqdm(read_in_chunks(source, chunk_size), total=count, desc="Progress", leave=True):
-            available_check(lines=chunk, saved_file=filename, model=model)
+        logger.info(f"[Check] start to check available for sites")
+        chunks = read_in_chunks(source, size)
+        if num_processes == 1 or count == 1:
+            for chunk in tqdm(chunks, total=count, desc="Progress", leave=True):
+                available_check(lines=chunk, saved_file=dest, model=model, num_threads=num_threads)
+        else:
+            tasks = [[x, dest, model, num_threads, args.show, i + 1] for i, x in enumerate(chunks)]
+            utils.multi_process_collect(func=available_check, tasks=tasks)
+
+        logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
     except FileNotFoundError:
         logger.error(f"[Check] file {source} not exists")
     except:
@@ -88,12 +114,21 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "-c",
+        "--chunk",
+        type=int,
+        required=False,
+        default=512,
+        help="chunk size of each file block",
+    )
+
+    parser.add_argument(
         "-f",
         "--filename",
         type=str,
         required=False,
         default=nextweb.MATERIAL_FILE,
-        help="file name of candidates",
+        help="name of the file to be checked",
     )
 
     parser.add_argument(
@@ -112,6 +147,42 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="overwrite file if exists",
+    )
+
+    parser.add_argument(
+        "-p",
+        "--process",
+        type=int,
+        required=False,
+        default=0,
+        help="number of processes, CPU cores as default",
+    )
+
+    parser.add_argument(
+        "-r",
+        "--result",
+        type=str,
+        required=False,
+        default="",
+        help="filename to save results",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--show",
+        dest="show",
+        action="store_true",
+        default=False,
+        help="show check progress bar",
+    )
+
+    parser.add_argument(
+        "-t",
+        "--thread",
+        type=int,
+        required=False,
+        default=0,
+        help="number of concurrent threads, defaults to double the number of CPU cores",
     )
 
     main(parser.parse_args())
