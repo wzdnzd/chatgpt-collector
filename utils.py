@@ -138,7 +138,7 @@ def http_post(
         return opener.open(request, timeout=timeout), 0
     except urllib.error.HTTPError as e:
         if retry < 0 or e.code in [400, 401, 404, 405]:
-            return None, 2
+            return None, 3 if retry < 0 else 2
 
         return http_post(
             url=url,

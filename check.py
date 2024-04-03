@@ -98,8 +98,11 @@ def main(args: argparse.Namespace) -> None:
         logger.info(f"[Check] start to check available for sites")
         chunks = read_in_chunks(source, size)
         if num_processes == 1 or count == 1:
-            for chunk in tqdm(chunks, total=count, desc="Progress", leave=True):
-                available_check(lines=chunk, saved_file=dest, model=model, num_threads=num_threads)
+            tasks = chunks if count == 1 else tqdm(chunks, total=count, desc="Progress", leave=True)
+            show = True if count == 1 else False
+
+            for task in tasks:
+                available_check(lines=task, saved_file=dest, model=model, num_threads=num_threads, show_progress=show)
         else:
             tasks = [[x, dest, model, num_threads, args.show, i + 1] for i, x in enumerate(chunks)]
             utils.multi_process_collect(func=available_check, tasks=tasks)

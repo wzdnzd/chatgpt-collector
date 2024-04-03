@@ -298,9 +298,12 @@ def check(domain: str, model: str = "gpt-3.5-turbo") -> str:
         return ""
 
     for url in urls:
-        success = chat(url=url, model=model, timeout=10)
+        success, terminate = chat(url=url, model=model, timeout=10)
         if success:
             target = f"{url}?mode=openai&stream=true"
+            break
+        elif terminate:
+            # if terminal is true, all attempts should be aborted immediately
             break
 
     if LOCAL_MODE and target:
@@ -342,9 +345,11 @@ def chat(
     token: str = "",
     retry: int = 3,
     timeout: int = 6,
-) -> bool:
+) -> tuple[bool, bool]:
+    """the first return value indicates whether the URL is available, and the second return value indicates whether subsequent attempts should be terminated"""
+
     if not url:
-        return False
+        return False, True
 
     if not headers:
         headers = {
@@ -382,7 +387,7 @@ def chat(
         ],
     }
     try:
-        response = utils.http_post_noerror(
+        response, exitcode = utils.http_post(
             url=url,
             headers=headers,
             params=payload,
@@ -391,12 +396,20 @@ def chat(
             allow_redirects=False,
         )
         if not response or response.getcode() != 200:
-            return False
+            return False, exitcode == 2
 
         content = response.read().decode("UTF8")
-        return content and re.search("ChatGPT", content, flags=re.I) is not None
+        if not content:
+            return False, False
+        elif re.search("ChatGPT", content, flags=re.I) is not None:
+            return True, True
+        elif re.search("model_not_found", content, flags=re.I) is not None:
+            logger.warning(f"[NextWeb] API can be used but not found model: {model}, url: {url}")
+            return False, True
+        else:
+            return False, False
     except:
-        return False
+        return False, False
 
 
 def check_billing(domain: str) -> bool:
