@@ -137,7 +137,7 @@ def http_post(
         opener = urllib.request.build_opener(NoRedirect)
         return opener.open(request, timeout=timeout), 0
     except urllib.error.HTTPError as e:
-        if retry < 0 or e.code in [400, 401, 404, 405]:
+        if retry < 0 or e.code in [400, 401]:
             return None, 3 if retry < 0 else 2
 
         return http_post(
@@ -239,7 +239,7 @@ def load_dotenv() -> None:
 
     with open(filename, mode="r", encoding="utf8") as f:
         for line in f.readlines():
-            content = line.strip()
+            content = line.strip().replace("\n", "")
             if not content or content.startswith("#") or "=" not in content:
                 continue
             words = content.split("=", maxsplit=1)

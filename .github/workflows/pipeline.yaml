@@ -32,7 +32,7 @@ jobs:
           architecture: "x64"
 
       - name: InstallDependences
-        run: pip3 install cryptography
+        run: pip3 install cryptography aiohttp aiofiles
 
       - name: Subscribe
         run: python -u ./main.py

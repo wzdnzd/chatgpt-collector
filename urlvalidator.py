@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+
+# @Author  : wzdnzd
+# @Time    : 2022-07-15
+
 import re
 
 IP_MIDDLE_OCTET = r"(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5]))"

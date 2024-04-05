@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+
+# @Author  : wzdnzd
+# @Time    : 2022-09-23
+
 import argparse
 import json
 import os
@@ -19,6 +24,7 @@ def main(args: argparse.Namespace) -> None:
         "num_threads": args.num,
         "skip_check": args.nocheck,
         "chunk": max(1, args.chunk),
+        "async": args.run_async,
     }
 
     filename = utils.trim(args.persist)
@@ -78,6 +84,15 @@ if __name__ == "__main__":
     utils.load_dotenv()
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-a",
+        "--async",
+        dest="run_async",
+        action="store_true",
+        default=False,
+        help="run with asynchronous mode",
+    )
+
     parser.add_argument(
         "-b",
         "--backup",

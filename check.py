@@ -1,4 +1,10 @@
+# -*- coding: utf-8 -*-
+
+# @Author  : wzdnzd
+# @Time    : 2024-03-26
+
 import argparse
+import asyncio
 import os
 import traceback
 from datetime import datetime
@@ -8,38 +14,6 @@ from tqdm import tqdm
 import utils
 from logger import logger
 from scripts import nextweb
-
-
-def available_check(
-    lines: list[str],
-    saved_file,
-    model: str = "gpt-3.5-turbo",
-    num_threads: int = -1,
-    show_progress: bool = False,
-    index: int = 0,
-) -> None:
-    if not lines or not isinstance(lines, list):
-        logger.warning(f"[Check] skip process due to lines is empty")
-        return
-
-    saved_file = utils.trim(saved_file)
-    if not saved_file:
-        raise ValueError(f"you must specify the save file path")
-
-    filepath = os.path.abspath(saved_file)
-    sites = nextweb.concurrent_check(
-        sites=lines,
-        model=model,
-        num_threads=num_threads,
-        show_progress=show_progress,
-        index=index,
-    )
-
-    if not sites:
-        return
-
-    if not utils.write_file(filepath, sites, overwrite=False):
-        logger.error(f"[Check] save result to file {filepath} failed, sites: {sites}")
 
 
 def read_in_chunks(filepath: str, chunk_size: int = 100):
@@ -90,22 +64,44 @@ def main(args: argparse.Namespace) -> None:
     if args.overwrite and os.path.exists(dest) and os.path.isfile(dest):
         os.remove(dest)
 
+    num_processes, num_threads = args.process, args.thread
+
     try:
-        size, total = max(args.chunk, 1), count_lines(source)
-        count = (total + size - 1) // size
-        num_processes, num_threads = args.process, args.thread
+        if not args.blocked:
+            with open(source, mode="r", encoding="utf8") as f:
+                sites = [x.replace("\n", "") for x in f.readlines() if x]
+                asyncio.run(
+                    nextweb.check_async(
+                        sites=sites,
+                        model=model,
+                        concurrency=num_threads,
+                        filename=dest,
+                        show_progress=args.show,
+                    )
+                )
 
-        logger.info(f"[Check] start to check available for sites")
-        chunks = read_in_chunks(source, size)
-        if num_processes == 1 or count == 1:
-            tasks = chunks if count == 1 else tqdm(chunks, total=count, desc="Progress", leave=True)
-            show = True if count == 1 else False
-
-            for task in tasks:
-                available_check(lines=task, saved_file=dest, model=model, num_threads=num_threads, show_progress=show)
         else:
-            tasks = [[x, dest, model, num_threads, args.show, i + 1] for i, x in enumerate(chunks)]
-            utils.multi_process_collect(func=available_check, tasks=tasks)
+            size, total = max(args.chunk, 1), count_lines(source)
+            count = (total + size - 1) // size
+
+            logger.info(f"[Check] start to check available for sites")
+            chunks = read_in_chunks(source, size)
+            if num_processes == 1 or count == 1:
+                tasks = chunks if count == 1 else tqdm(chunks, total=count, desc="Progress", leave=True)
+                show = True if count == 1 else False
+
+                for task in tasks:
+                    nextweb.check_concurrent(
+                        sites=task,
+                        model=model,
+                        num_threads=num_threads,
+                        show_progress=show,
+                        index=0,
+                        filename=dest,
+                    )
+            else:
+                tasks = [[x, model, num_threads, args.show, i + 1, dest] for i, x in enumerate(chunks)]
+                utils.multi_process_collect(func=nextweb.check_concurrent, tasks=tasks)
 
         logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
     except FileNotFoundError:
@@ -115,7 +111,18 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
+    utils.load_dotenv()
+
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-b",
+        "--blocked",
+        dest="blocked",
+        action="store_true",
+        default=False,
+        help="synchronised testing",
+    )
+
     parser.add_argument(
         "-c",
         "--chunk",
