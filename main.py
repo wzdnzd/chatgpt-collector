@@ -294,13 +294,15 @@ def process(url: str) -> None:
             tasks = regularized(data=configuration, pushtool=pushtool)
 
             if not tasks:
-                logger.warning("[ConfigWarn] no valid crawler task found")
+                logger.warning("[ConfigError] cannot found any legal collect task from scripts and pages")
                 return
 
             urls = batch_call(tasks.get("scripts", {}))
             urls.extend(crawl_pages(tasks.get("pages", {})))
+
             # exist urls
             candidates = fetct_exist(tasks.get("persists"), pushtool)
+
             # generate blacklist
             blacklist = generate_blacklist(
                 persists=tasks.get("persists"),
@@ -383,10 +385,6 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
                 continue
 
             page_tasks[k] = v.get("params", {})
-
-    if not script_tasks and not page_tasks:
-        logger.error("[ConfigError] cannot found any legal collect task from scripts and pages")
-        return {}
 
     threshold = max(int(data.get("threshold", 72)), 1)
     tolerance = max(int(data.get("tolerance", 3)), 1)
