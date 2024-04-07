@@ -167,6 +167,12 @@ def parse_site(
         return []
 
     peer, domains = min(max(1, peer), 100), set()
+
+    # fetch homepage
+    homepage = extract_homepage(url=url)
+    if homepage:
+        domains.add(homepage)
+
     if not last:
         last = datetime(year=1970, month=1, day=1, tzinfo=timezone.utc)
 
@@ -202,6 +208,29 @@ def parse_site(
         utils.write_file(filename=filename, lines=targets, overwrite=False)
 
     return targets
+
+
+def extract_homepage(url: str) -> str:
+    url = utils.trim(url).removesuffix("/deployments")
+    if not url:
+        return ""
+
+    content = utils.http_get(url=url, headers=DEFAULT_HEADERS, interval=2.0)
+    if not content:
+        return ""
+
+    try:
+        data = json.loads(content)
+        if not data:
+            return ""
+
+        homepage = data.get("homepage", "")
+        if homepage and homepage.startswith("https://github.com/"):
+            homepage = ""
+
+        return homepage
+    except:
+        return ""
 
 
 def extract_target(url: str, session: str, exclude: str = "") -> list[str]:
