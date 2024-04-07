@@ -56,7 +56,7 @@ DEFAULT_PROMPT = "Please tell me what is ChatGPT in English with at most 20 word
 COMMON_PAYLOAD = {
     GPTProvider.OPENAI: {
         "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
-        "stream": True,
+        "stream": False,
         "model": "gpt-4",
         "temperature": 1,
         "presence_penalty": 0,

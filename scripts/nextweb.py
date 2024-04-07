@@ -372,7 +372,7 @@ def auth(url: str, filename: str) -> str:
         return ""
 
 
-def check(domain: str, filename: str, standard: bool, model: str = "gpt-3.5-turbo") -> str:
+def check(domain: str, filename: str, standard: bool = False, model: str = "gpt-3.5-turbo") -> str:
     target, urls = "", get_urls(domain=domain, standard=standard)
 
     for url in urls:
@@ -522,7 +522,7 @@ async def chat_async(
 async def check_async(
     sites: list[str],
     filename: str,
-    standard: bool,
+    standard: bool = False,
     model: str = "gpt-3.5-turbo",
     concurrency: int = 512,
     show_progress: bool = True,
