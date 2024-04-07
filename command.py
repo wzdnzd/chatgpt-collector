@@ -15,9 +15,19 @@ from scripts import nextweb
 
 
 def main(args: argparse.Namespace) -> None:
+    username = utils.trim(args.username)
+    if not username:
+        logger.error(f"[CMD] username cannot not be empty")
+        return
+
+    repository = utils.trim(args.repository)
+    if not repository:
+        logger.error(f"[CMD] repository cannot not be empty")
+        return
+
     params = {
         "sort": args.sort,
-        "refresh": args.refresh,
+        "refresh": args.generate,
         "checkonly": args.checkonly,
         "overlay": args.overlay,
         "model": args.model,
@@ -25,6 +35,10 @@ def main(args: argparse.Namespace) -> None:
         "skip_check": args.nocheck,
         "chunk": max(1, args.chunk),
         "async": args.run_async,
+        "username": username,
+        "repository": repository,
+        "standard": args.typical,
+        "exclude": utils.trim(args.exclude),
     }
 
     filename = utils.trim(args.persist)
@@ -61,7 +75,7 @@ def main(args: argparse.Namespace) -> None:
     if sites and args.backup:
         directory = utils.trim(args.directory)
         if not directory:
-            directory = os.path.join(utils.PATH, "data")
+            directory = os.path.join(utils.PATH, "data", repository.lower())
         else:
             directory = os.path.abspath(directory)
 
@@ -116,8 +130,17 @@ if __name__ == "__main__":
         "--directory",
         type=str,
         required=False,
-        default=os.path.join(utils.PATH, "data"),
+        default="",
         help="final available API save path",
+    )
+
+    parser.add_argument(
+        "-e",
+        "--exclude",
+        type=str,
+        required=False,
+        default="",
+        help="regular expressions for dropped domains",
     )
 
     parser.add_argument(
@@ -127,6 +150,15 @@ if __name__ == "__main__":
         required=False,
         default="",
         help="final available API save file name",
+    )
+
+    parser.add_argument(
+        "-g",
+        "--generate",
+        dest="generate",
+        action="store_true",
+        default=False,
+        help="re-generate all data from github",
     )
 
     parser.add_argument(
@@ -185,11 +217,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-r",
-        "--refresh",
-        dest="refresh",
-        action="store_true",
-        default=False,
-        help="re-generate all data from github",
+        "--repository",
+        type=str,
+        required=False,
+        default="ChatGPT-Next-Web",
+        help="github repository name",
     )
 
     parser.add_argument(
@@ -200,6 +232,24 @@ if __name__ == "__main__":
         default="newest",
         choices=["newest", "oldest", "stargazers", "watchers"],
         help="forks sort type, see: https://docs.github.com/en/rest/repos/forks",
+    )
+
+    parser.add_argument(
+        "-t",
+        "--typical",
+        dest="typical",
+        action="store_true",
+        default=False,
+        help="is a standard OpenAI API subpath",
+    )
+
+    parser.add_argument(
+        "-u",
+        "--username",
+        type=str,
+        required=False,
+        default="ChatGPTNextWeb",
+        help="github username",
     )
 
     main(parser.parse_args())

@@ -37,18 +37,6 @@ OWNER = "ChatGPTNextWeb"
 # github repository name
 REPO = "ChatGPT-Next-Web"
 
-# deployments filepath
-DEPLOYMENTS_FILE = os.path.join(utils.PATH, "data", "deployments.txt")
-
-# domains filepath
-MATERIAL_FILE = os.path.join(utils.PATH, "data", "material.txt")
-
-# candidates filepath
-CANDIDATES_FILE = os.path.join(utils.PATH, "data", "candidates.txt")
-
-# result filepath
-SITES_FILE = os.path.join(utils.PATH, "data", "sites.txt")
-
 # request headers
 DEFAULT_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -82,8 +70,25 @@ def last_history(url: str, refresh: bool) -> datetime:
     return last
 
 
-def query_forks_count(retry: int = 3) -> int:
-    url = f"{GITHUB_API}/search/repositories?q=user:{OWNER}+repo:{REPO}+{REPO}"
+def generate_path(repository: str, filename: str, username: str = "") -> str:
+    filename = utils.trim(filename)
+    if not filename:
+        raise ValueError("filename cannot be empty")
+
+    repository = utils.trim(repository).lower()
+    username = utils.trim(username).lower()
+
+    return os.path.join(utils.PATH, "data", username, repository, filename)
+
+
+def query_forks_count(username: str, repository: str, retry: int = 3) -> int:
+    username = utils.trim(username)
+    repository = utils.trim(repository)
+    if not username or not repository:
+        logger.error(f"[NextWeb] invalid github username or repository")
+        return -1
+
+    url = f"{GITHUB_API}/search/repositories?q=user:{username}+repo:{repository}+{repository}"
     content = utils.http_get(url=url, headers=DEFAULT_HEADERS, retry=retry)
     if not content:
         logger.error(f"[NextWeb] failed to query forks count")
@@ -101,9 +106,15 @@ def query_forks_count(retry: int = 3) -> int:
         return -1
 
 
-def list_deployments(history: datetime, sort: str = "newest") -> list[str]:
+def list_deployments(username: str, repository: str, history: datetime, sort: str = "newest") -> list[str]:
+    username = utils.trim(username)
+    repository = utils.trim(repository)
+    if not username or not repository:
+        logger.error(f"[NextWeb] cannot list deployments from github due to username or repository is empty")
+        return []
+
     last = history or datetime(year=1970, month=1, day=1, tzinfo=timezone.utc)
-    count, peer = query_forks_count(retry=3), 100
+    count, peer = query_forks_count(username=username, repository=repository, retry=3), 100
     total = int(math.ceil(count / peer))
 
     # see: https://docs.github.com/en/rest/repos/forks?apiVersion=2022-11-28
@@ -112,14 +123,22 @@ def list_deployments(history: datetime, sort: str = "newest") -> list[str]:
 
     # concurrent
     if last.year == 1970:
-        tasks = [[x, last, peer, sort] for x in range(1, total + 1)]
+        tasks = [[username, repository, x, last, peer, sort] for x in range(1, total + 1)]
         results = utils.multi_thread_collect(func=query_deployments_page, tasks=tasks)
         return list(itertools.chain.from_iterable([x[0] for x in results]))
 
     # serial
     deployments, over, page = [], False, 1
     while not over and page <= total:
-        array, over = query_deployments_page(page=page, last=last, peer=peer, sort=sort)
+        array, over = query_deployments_page(
+            username=username,
+            repository=repository,
+            page=page,
+            last=last,
+            peer=peer,
+            sort=sort,
+        )
+
         deployments.extend(array)
         page += 1
 
@@ -128,17 +147,23 @@ def list_deployments(history: datetime, sort: str = "newest") -> list[str]:
 
 def parse_site(
     url: str,
+    filename: str,
     page: int = 1,
     peer: int = 5,
     session: str = "",
     rest: bool = True,
     last: datetime = None,
-    clean: bool = True,
+    exclude: str = "",
 ) -> list[str]:
     if not rest and session:
-        return extract_target(url=url, session=session)
+        return extract_target(url=url, session=session, exclude=exclude)
 
     if not url or page <= 0:
+        return []
+
+    filename = utils.trim(filename)
+    if not filename:
+        logger.error(f"you must specify a filename to save parse result")
         return []
 
     peer, domains = min(max(1, peer), 100), set()
@@ -165,7 +190,7 @@ def parse_site(
                 if updated and updated <= last:
                     continue
 
-                site = query_deployment_status(url=item.get("statuses_url", ""), clean=clean)
+                site = query_deployment_status(url=item.get("statuses_url", ""), exclude=exclude)
                 if site:
                     domains.add(site)
         except:
@@ -174,12 +199,12 @@ def parse_site(
     targets = [] if not domains else list(domains)
 
     if LOCAL_MODE and targets:
-        utils.write_file(filename=MATERIAL_FILE, lines=targets, overwrite=False)
+        utils.write_file(filename=filename, lines=targets, overwrite=False)
 
     return targets
 
 
-def extract_target(url: str, session: str) -> list[str]:
+def extract_target(url: str, session: str, exclude: str = "") -> list[str]:
     if not url or not session:
         return []
 
@@ -193,10 +218,25 @@ def extract_target(url: str, session: str) -> list[str]:
     content = utils.http_get(url=url, headers=headers, interval=1.0)
     regex = '<a href="(https://.*?)" data-testid="deployments-list-environment-url" tabindex="-1">'
     groups = re.findall(regex, content, flags=re.I)
-    return [] if not groups else groups
+    exclude = utils.trim(exclude)
+
+    if not exclude or not groups:
+        return [] if not groups else groups
+
+    domains = list()
+    for domain in groups:
+        try:
+            if re.search(exclude, domain, flags=re.I) is not None:
+                continue
+        except:
+            logger.warning(f"[NextWeb] invalid exclude regex: {exclude}")
+
+        domains.append(domain)
+
+    return domains
 
 
-def query_deployment_status(url: str, clean: bool = True) -> str:
+def query_deployment_status(url: str, exclude: str = "") -> str:
     if not url:
         return ""
 
@@ -207,9 +247,18 @@ def query_deployment_status(url: str, clean: bool = True) -> str:
             return ""
 
         state = statuses[0].get("state", "")
-        target = statuses[0].get("target_url", "") or ""
-        if clean and (target.startswith("https://dash.zeabur.com/") or target.startswith("https://github.com/")):
+        target = statuses[0].get("environment_url", "") or ""
+
+        if target == "https://" or target == "http://":
             return ""
+
+        exclude = utils.trim(exclude)
+        if exclude:
+            try:
+                if re.search(exclude, target, flags=re.I) is not None:
+                    return ""
+            except:
+                logger.warning(f"[NextWeb] invalid exclude regex: {exclude}")
 
         success = state == "success"
         if not success:
@@ -221,12 +270,22 @@ def query_deployment_status(url: str, clean: bool = True) -> str:
         return ""
 
 
-def query_deployments_page(page: int, last: datetime, peer: int = 100, sort: str = "newest") -> tuple[list[str], bool]:
-    if page <= 0 or not last:
+def query_deployments_page(
+    username: str,
+    repository: str,
+    page: int,
+    last: datetime,
+    peer: int = 100,
+    sort: str = "newest",
+) -> tuple[list[str], bool]:
+    username = utils.trim(username)
+    repository = utils.trim(repository)
+
+    if not username or not repository or page <= 0 or not last:
         return [], False
 
     peer = min(max(peer, 1), 100)
-    url = f"{GITHUB_API}/repos/{OWNER}/{REPO}/forks?sort={sort}&per_page={peer}&page={page}"
+    url = f"{GITHUB_API}/repos/{username}/{repository}/forks?sort={sort}&per_page={peer}&page={page}"
     deployments, over, starttime = list(), False, time.time()
 
     content, retry = "", 5
@@ -262,8 +321,9 @@ def query_deployments_page(page: int, last: datetime, peer: int = 100, sort: str
     return deployments, over
 
 
-def auth(url: str) -> str:
-    if not url:
+def auth(url: str, filename: str) -> str:
+    filename = utils.trim(filename)
+    if not url or not filename:
         return ""
 
     response = utils.http_post_noerror(url=f"{url}/api/config", allow_redirects=False, retry=2)
@@ -276,7 +336,6 @@ def auth(url: str) -> str:
         target = "" if data.get("needCode", False) else url
 
         if LOCAL_MODE and target:
-            filename = os.path.join(utils.PATH, "data", CANDIDATES_FILE)
             utils.write_file(filename=filename, lines=target, overwrite=False)
 
         return target
@@ -284,9 +343,8 @@ def auth(url: str) -> str:
         return ""
 
 
-def check(domain: str, model: str = "gpt-3.5-turbo", filename: str = "") -> str:
-    target, urls = "", get_urls(domain=domain)
-    filename = utils.trim(filename) or SITES_FILE
+def check(domain: str, filename: str, standard: bool, model: str = "gpt-3.5-turbo") -> str:
+    target, urls = "", get_urls(domain=domain, standard=standard)
 
     for url in urls:
         success, terminate = chat(url=url, model=model, timeout=30)
@@ -297,7 +355,8 @@ def check(domain: str, model: str = "gpt-3.5-turbo", filename: str = "") -> str:
             # if terminal is true, all attempts should be aborted immediately
             break
 
-    if LOCAL_MODE and target:
+    filename = utils.trim(filename)
+    if LOCAL_MODE and target and filename:
         utils.write_file(filename=filename, lines=target, overwrite=False)
 
     return target
@@ -305,19 +364,25 @@ def check(domain: str, model: str = "gpt-3.5-turbo", filename: str = "") -> str:
 
 def check_concurrent(
     sites: list[str],
+    filename: str,
+    standard: bool,
     model: str = "gpt-3.5-turbo",
     num_threads: int = -1,
     show_progress: bool = False,
     index: int = 0,
-    filename: str = "",
 ) -> list[str]:
     if not sites or not isinstance(sites, list):
         logger.warning(f"[NextWeb] skip process due to lines is empty")
         return []
 
+    filename = utils.trim(filename)
+    if not filename:
+        logger.error(f"[NextWeb] filename cannot be empty")
+        return []
+
     model = utils.trim(model) or "gpt-3.5-turbo"
     index = max(0, index)
-    tasks = [[x, model, filename] for x in sites if x]
+    tasks = [[x, filename, standard, model] for x in sites if x]
 
     result = utils.multi_thread_collect(
         func=check,
@@ -351,7 +416,7 @@ def chat(
     retry = 3 if retry < 0 else retry
     timeout = 15 if timeout <= 0 else timeout
 
-    payload = get_payload(model=model)
+    payload = get_payload(model=model, stream=False)
     try:
         response, exitcode = utils.http_post(
             url=url,
@@ -395,7 +460,7 @@ async def chat_async(
         headers["Authorization"] = f"Bearer {token}"
 
     model = model.strip() or "gpt-3.5-turbo"
-    payload = get_payload(model=model, stream=True)
+    payload = get_payload(model=model, stream=False)
     timeout = 6 if timeout <= 0 else timeout
     interval = max(0, interval)
 
@@ -427,20 +492,20 @@ async def chat_async(
 
 async def check_async(
     sites: list[str],
+    filename: str,
+    standard: bool,
     model: str = "gpt-3.5-turbo",
     concurrency: int = 512,
-    filename: str = "",
     show_progress: bool = True,
 ) -> list[str]:
     async def checkone(
         domain: str,
+        filename: str,
         semaphore: asyncio.Semaphore,
         model: str = "gpt-3.5-turbo",
-        filename: str = "",
     ) -> str:
         async with semaphore:
-            target, urls = "", get_urls(domain=domain)
-            filename = utils.trim(filename) or SITES_FILE
+            target, urls = "", get_urls(domain=domain, standard=standard)
 
             for url in urls:
                 success, terminal = await chat_async(url=url, model=model, timeout=30, interval=3)
@@ -465,8 +530,12 @@ async def check_async(
         logger.error(f"[NextWeb] skip check due to domains is empty")
         return []
 
+    filename = utils.trim(filename)
+    if not filename:
+        logger.error(f"[NextWeb] must specify the file name to save")
+        return []
+
     model = utils.trim(model) or "gpt-3.5-turbo"
-    filename = utils.trim(filename) or SITES_FILE
 
     concurrency = 256 if concurrency <= 0 else concurrency
     semaphore = asyncio.Semaphore(concurrency)
@@ -478,7 +547,7 @@ async def check_async(
         # show progress bar
         tasks, targets = [], []
         for site in sites:
-            tasks.append(asyncio.create_task(checkone(site, semaphore, model, filename)))
+            tasks.append(asyncio.create_task(checkone(site, filename, semaphore, model)))
 
         pbar = tqdm(total=len(tasks), desc="Processing", unit="task")
         for task in asyncio.as_completed(tasks):
@@ -491,7 +560,7 @@ async def check_async(
         pbar.close()
     else:
         # no progress bar
-        tasks = [checkone(domain, semaphore, model, filename) for domain in sites if domain]
+        tasks = [checkone(domain, filename, semaphore, model) for domain in sites if domain]
         targets = [x for x in await asyncio.gather(*tasks)]
 
     logger.info(f"[NextWeb] async check completed, cost: {time.time()-starttime:.2f}s")
@@ -529,7 +598,7 @@ def get_headers(domain: str) -> dict:
     }
 
 
-def get_urls(domain: str) -> list[str]:
+def get_urls(domain: str, standard: bool = False) -> list[str]:
     domain = utils.trim(domain)
     if not domain:
         return []
@@ -539,7 +608,17 @@ def get_urls(domain: str) -> list[str]:
         urls = list()
 
         if not result.path or result.path == "/":
-            for subpath in ["/api/openai/v1/chat/completions", "/api/chat-stream"]:
+            subpaths = (
+                ["/v1/chat/completions"]
+                if standard
+                else [
+                    "/v1/chat/completions",
+                    "/api/chat-stream",
+                    "/api/openai/v1/chat/completions",
+                ]
+            )
+
+            for subpath in subpaths:
                 url = parse.urljoin(domain, subpath)
                 urls.append(url)
         else:
@@ -590,15 +669,15 @@ def read(filepath: str) -> list[str]:
     return collections
 
 
-def load(url: str, overlay: bool) -> list[str]:
+def load(url: str, overlay: bool, sites_file: str = "", material_file: str = "") -> list[str]:
     url, sites = utils.trim(url), []
 
     # load local file if exist
-    sites.extend(read(SITES_FILE))
+    sites.extend(read(filepath=sites_file))
 
     # add local existing material if necessary
     if overlay:
-        sites.extend(read(MATERIAL_FILE))
+        sites.extend(read(filepath=material_file))
 
     # load remote sites
     if url:
@@ -656,13 +735,31 @@ def collect(params: dict) -> list:
     # run type
     run_async = params.get("async", True)
 
+    # github username
+    username = utils.trim(params.get("username", "")) or OWNER
+
+    # github repository
+    repository = utils.trim(params.get("repository", "")) or REPO
+
+    # deployments filepath
+    deployments_file = generate_path(repository=repository, filename="deployments.txt")
+
+    # domains filepath
+    material_file = generate_path(repository=repository, filename="material.txt")
+
+    # candidates filepath
+    candidates_file = generate_path(repository=repository, filename="candidates.txt")
+
+    # result filepath
+    sites_file = generate_path(repository=repository, filename="sites.txt")
+
     mode, starttime = "LOCAL" if LOCAL_MODE else "REMOTE", time.time()
     logger.info(
-        f"[NextWeb] start to collect sites from {OWNER}/{REPO}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
+        f"[NextWeb] start to collect sites from {username}/{repository}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
     )
 
     # load exists
-    candidates = [] if refresh else load(pushtool.raw_url(database), overlay)
+    candidates = [] if refresh else load(pushtool.raw_url(database), overlay, sites_file, material_file)
 
     if not checkonly:
         begin = datetime.now(timezone.utc).strftime(DATE_FORMAT)
@@ -671,11 +768,11 @@ def collect(params: dict) -> list:
         last = last_history(pushtool.raw_url(push_conf=modified), refresh)
 
         # TODO: if it is possible to bypass the rate limiting measures of GitHub, asynchronous requests can be used
-        deployments = list_deployments(last, sort)
+        deployments = list_deployments(username, repository, last, sort)
 
         # add local existing deployments if necessary
         if overlay:
-            deployments.extend(read(filepath=DEPLOYMENTS_FILE))
+            deployments.extend(read(filepath=deployments_file))
 
         # deduplication
         deployments = list(set(deployments))
@@ -685,13 +782,15 @@ def collect(params: dict) -> list:
             # save deployments to file
             if LOCAL_MODE:
                 # backup exist files
-                for filename in [DEPLOYMENTS_FILE, MATERIAL_FILE, CANDIDATES_FILE]:
+                for filename in [deployments_file, material_file, candidates_file]:
                     backup_file(filepath=filename)
 
-                utils.write_file(DEPLOYMENTS_FILE, deployments, True)
+                utils.write_file(deployments_file, deployments, True)
 
-            clean = params.get("clean", True)
-            args = [[x, 1, 100, session, True, last, clean] for x in deployments]
+            # regex for dropped domains
+            exclude = utils.trim(params.get("exclude", ""))
+
+            args = [[x, material_file, 1, 100, session, True, last, exclude] for x in deployments]
             logger.info(f"[NextWeb] extract target domain begin, count: {len(args)}")
 
             materials = utils.multi_thread_collect(
@@ -715,25 +814,42 @@ def collect(params: dict) -> list:
         return list(set(candidates))
 
     # backup sites.txt if file exists
-    backup_file(filepath=SITES_FILE)
+    backup_file(filepath=sites_file)
 
     candidates = list(set(candidates))
     chunk = max(params.get("chunk", 256), 1)
     model = params.get("model", "") or "gpt-3.5-turbo"
+    standard = params.get("standard", False)
 
     logger.info(f"[NextWeb] start to check available, sites: {len(candidates)}, model: {model}")
 
     # run as async
     if run_async:
-        sites = asyncio.run(check_async(sites=candidates, model=model, concurrency=num_threads, show_progress=True))
+        sites = asyncio.run(
+            check_async(
+                sites=candidates,
+                filename=sites_file,
+                standard=standard,
+                model=model,
+                concurrency=num_threads,
+                show_progress=True,
+            )
+        )
     # concurrent check
     elif len(candidates) <= chunk:
-        results = check_concurrent(sites=candidates, model=model, num_threads=num_threads, show_progress=True)
+        results = check_concurrent(
+            sites=candidates,
+            filename=sites_file,
+            standard=standard,
+            model=model,
+            num_threads=num_threads,
+            show_progress=True,
+        )
         sites = [x for x in results if x]
     else:
         # sharding
         slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
-        tasks = [[x, model, num_threads, False, 0] for x in slices]
+        tasks = [[x, sites_file, standard, model, num_threads, False, 0] for x in slices]
         results = utils.multi_process_collect(func=check_concurrent, tasks=tasks)
         sites = [x for r in results if r for x in r if x]
 
@@ -744,5 +860,5 @@ def collect(params: dict) -> list:
             logger.error(f"[NextWeb] push {len(sites)} sites to remote failed")
 
     cost = "{:.2f}s".format(time.time() - starttime)
-    logger.info(f"[NextWeb] finished check {len(results)} candidates, got {len(sites)} avaiable sites, cost: {cost}")
+    logger.info(f"[NextWeb] finished check {len(candidates)} candidates, got {len(sites)} avaiable sites, cost: {cost}")
     return sites

@@ -59,7 +59,7 @@ def main(args: argparse.Namespace) -> None:
     if not result:
         result = f"availables-{model}-{current}.txt"
 
-    dest = os.path.abspath(os.path.join(utils.PATH, "data", result))
+    dest = os.path.abspath(os.path.join(os.path.dirname(source), result))
 
     if args.overwrite and os.path.exists(dest) and os.path.isfile(dest):
         os.remove(dest)
@@ -73,10 +73,11 @@ def main(args: argparse.Namespace) -> None:
                 asyncio.run(
                     nextweb.check_async(
                         sites=sites,
+                        filename=dest,
+                        standard=args.standard,
                         model=model,
                         concurrency=num_threads,
-                        filename=dest,
-                        show_progress=args.show,
+                        show_progress=args.display,
                     )
                 )
 
@@ -93,14 +94,17 @@ def main(args: argparse.Namespace) -> None:
                 for task in tasks:
                     nextweb.check_concurrent(
                         sites=task,
+                        filename=dest,
+                        standard=args.standard,
                         model=model,
                         num_threads=num_threads,
                         show_progress=show,
                         index=0,
-                        filename=dest,
                     )
             else:
-                tasks = [[x, model, num_threads, args.show, i + 1, dest] for i, x in enumerate(chunks)]
+                tasks = [
+                    [x, dest, args.standard, model, num_threads, args.display, i + 1] for i, x in enumerate(chunks)
+                ]
                 utils.multi_process_collect(func=nextweb.check_concurrent, tasks=tasks)
 
         logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
@@ -130,6 +134,15 @@ if __name__ == "__main__":
         required=False,
         default=512,
         help="chunk size of each file block",
+    )
+
+    parser.add_argument(
+        "-d",
+        "--display",
+        dest="display",
+        action="store_true",
+        default=False,
+        help="show check progress bar",
     )
 
     parser.add_argument(
@@ -179,11 +192,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-s",
-        "--show",
-        dest="show",
+        "--standard",
+        dest="standard",
         action="store_true",
         default=False,
-        help="show check progress bar",
+        help="is a standard OpenAI API subpath",
     )
 
     parser.add_argument(
