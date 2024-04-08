@@ -208,7 +208,7 @@ async def chat_async(
                     content = await response.text()
                 except asyncio.TimeoutError:
                     await asyncio.sleep(interval)
-                    return await chat_async(url, model, token, retry - 1, min(timeout + 10, 90))
+                    return await chat_async(url, model, token, retry - 1, min(timeout + 10, 90), interval)
                 if not content:
                     return False, False
                 elif re.search("ChatGPT", content, flags=re.I) is not None:
@@ -220,7 +220,7 @@ async def chat_async(
                 return False, False
     except:
         await asyncio.sleep(interval)
-        return await chat_async(url, model, token, retry - 1, timeout)
+        return await chat_async(url, model, token, retry - 1, timeout, interval)
 
 
 async def check_async(
