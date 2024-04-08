@@ -11,9 +11,9 @@ from datetime import datetime
 
 from tqdm import tqdm
 
+import interactive
 import utils
 from logger import logger
-from scripts import nextweb
 
 
 def read_in_chunks(filepath: str, chunk_size: int = 100):
@@ -71,7 +71,7 @@ def main(args: argparse.Namespace) -> None:
             with open(source, mode="r", encoding="utf8") as f:
                 sites = [x.replace("\n", "") for x in f.readlines() if x]
                 asyncio.run(
-                    nextweb.check_async(
+                    interactive.check_async(
                         sites=sites,
                         filename=dest,
                         standard=args.standard,
@@ -92,7 +92,7 @@ def main(args: argparse.Namespace) -> None:
                 show = True if count == 1 else False
 
                 for task in tasks:
-                    nextweb.check_concurrent(
+                    interactive.check_concurrent(
                         sites=task,
                         filename=dest,
                         standard=args.standard,
@@ -105,7 +105,7 @@ def main(args: argparse.Namespace) -> None:
                 tasks = [
                     [x, dest, args.standard, model, num_threads, args.display, i + 1] for i, x in enumerate(chunks)
                 ]
-                utils.multi_process_collect(func=nextweb.check_concurrent, tasks=tasks)
+                utils.multi_process_run(func=interactive.check_concurrent, tasks=tasks)
 
         logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
     except FileNotFoundError:
@@ -149,8 +149,8 @@ if __name__ == "__main__":
         "-f",
         "--filename",
         type=str,
-        required=False,
-        default=nextweb.MATERIAL_FILE,
+        required=True,
+        default="",
         help="name of the file to be checked",
     )
 

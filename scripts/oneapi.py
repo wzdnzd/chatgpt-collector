@@ -74,7 +74,7 @@ def checkin(params: dict) -> list[str]:
 
     logger.info(f"[ONEAPI] start to execute checkin with {len(tasks)} tasks")
     try:
-        results = utils.multi_thread_collect(checkin_one, tasks)
+        results = utils.multi_thread_run(checkin_one, tasks)
         failed = [r for r in results if not r.success]
         output = f"[ONEAPI] all tasks completed, total: {len(tasks)}, success: {len(results) - len(failed)}, fail: {len(failed)}"
         if failed:

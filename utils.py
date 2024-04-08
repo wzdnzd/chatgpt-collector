@@ -249,7 +249,7 @@ def load_dotenv() -> None:
 
 
 def url_complete(site: str) -> str:
-    if isblank(site):
+    if not isurl(site):
         return ""
 
     if not site.startswith("https://"):
@@ -262,7 +262,7 @@ def url_complete(site: str) -> str:
     return extract_domain(url=site, include_protocal=True)
 
 
-def multi_process_collect(func: typing.Callable, tasks: list) -> list:
+def multi_process_run(func: typing.Callable, tasks: list) -> list:
     if not func or not isinstance(func, typing.Callable):
         logger.error(f"skip execute due to func is not callable")
         return []
@@ -297,7 +297,7 @@ def multi_process_collect(func: typing.Callable, tasks: list) -> list:
     return results
 
 
-def multi_thread_collect(
+def multi_thread_run(
     func: typing.Callable,
     tasks: list,
     num_threads: int = None,

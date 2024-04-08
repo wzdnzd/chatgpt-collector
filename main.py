@@ -12,99 +12,22 @@ import os
 import re
 import time
 import traceback
-from enum import Enum
-from http.client import HTTPResponse
-from multiprocessing.managers import DictProxy, ListProxy
+from multiprocessing.managers import ListProxy
 from multiprocessing.synchronize import Semaphore
-from typing import Any
 from urllib import parse
 
+import interactive
 import push
+import urlvalidator
 import utils
 from logger import logger
 from urlvalidator import isurl
-
-
-class GPTProvider(Enum):
-    OPENAI = 1
-    AZURE = 2
-    PROXIEDOPENAI = 3
-    AILINK = 4
-    UNKNOWN = 5
-
-
-"""
-/api/chat-process: https://github.com/Chanzhaoyu/chatgpt-web/blob/main/src/api/index.ts
-/api/chat-stream: https://github.com/Yidadaa/ChatGPT-Next-Web/blob/main/app/api/chat-stream/route.ts
-/api/chat: https://github.com/mckaywrigley/chatbot-ui/blob/main/pages/api/chat.ts
-/api: https://github.com/ourongxing/chatgpt-vercel/blob/main/src/routes/api/index.ts
-"""
-COMMON_PATH_MODE = {
-    "/api/openai/v1/chat/completions": [GPTProvider.OPENAI],
-    "/api/chat-stream": [GPTProvider.OPENAI, GPTProvider.AZURE],
-    "/api/chat-process": [GPTProvider.AZURE, GPTProvider.OPENAI],
-    "/api/chat": [GPTProvider.PROXIEDOPENAI, GPTProvider.OPENAI, GPTProvider.AZURE],
-    "/api": [GPTProvider.OPENAI, GPTProvider.AZURE],
-    "/api/generateStream": [GPTProvider.OPENAI, GPTProvider.AZURE],
-    "/v1/chat/completions": [GPTProvider.OPENAI],
-    "/v1/chat/gpt/": [GPTProvider.AILINK],
-}
-
-DEFAULT_PROMPT = "Please tell me what is ChatGPT in English with at most 20 words"
-
-
-COMMON_PAYLOAD = {
-    GPTProvider.OPENAI: {
-        "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
-        "stream": False,
-        "model": "gpt-4",
-        "temperature": 1,
-        "presence_penalty": 0,
-    },
-    GPTProvider.AZURE: {
-        "prompt": DEFAULT_PROMPT,
-        "options": {},
-    },
-    GPTProvider.PROXIEDOPENAI: {
-        "model": {
-            "id": "gpt-4",
-            "name": "GPT-4",
-            "maxLength": 12000,
-            "tokenLimit": 4000,
-        },
-        "messages": [{"role": "user", "content": DEFAULT_PROMPT}],
-    },
-    GPTProvider.AILINK: {
-        "list": [
-            {"role": "user", "content": DEFAULT_PROMPT},
-            {"role": "assistant", "content": "..."},
-        ],
-        "temperature": 1,
-    },
-}
-
-
-HEADERS = {
-    "Content-Type": "application/json",
-    "path": "v1/chat/completions",
-    "User-Agent": utils.USER_AGENT,
-}
 
 # available group name
 AVAILABLES = "availables"
 
 # candidate group name
 CANDIDATES = "candidates"
-
-
-def query_provider(name: str) -> GPTProvider:
-    if not name:
-        return GPTProvider.UNKNOWN
-    for item in GPTProvider:
-        if name.upper() == item.name:
-            return item
-
-    return GPTProvider.UNKNOWN
 
 
 def execute_script(script: str, params: dict = {}) -> list[str]:
@@ -199,14 +122,9 @@ def crawl_pages(tasks: dict) -> list[str]:
         return []
 
     try:
-        cpu_count = multiprocessing.cpu_count()
-        num = len(params) if len(params) <= cpu_count else cpu_count
-
-        pool = multiprocessing.Pool(num)
-        results = pool.starmap(crawl_single_page, params)
-        pool.close()
-
+        results = utils.multi_thread_run(func=crawl_single_page, tasks=params)
         links = list(set(list(itertools.chain.from_iterable(results))))
+
         logger.info(f"[PagesCrawl] crawl from pages finished, found {len(links)} sites")
         return links
     except:
@@ -278,7 +196,8 @@ def crawl_single_page(
         return []
 
 
-def process(url: str) -> None:
+def process(args: argparse.Namespace) -> None:
+    url = args.config
     if not url or not isurl(url):
         logger.error("[ConfigError] cannot process because config is invalid")
         return
@@ -313,34 +232,68 @@ def process(url: str) -> None:
             # strictly conforms to the event-stream standard
             strict = tasks.get("stream", {}).get("strict", True)
 
-            data = batch_probe(
+            data = detect(
                 urls=urls,
                 candidates=candidates,
-                threshold=tasks.get("threshold"),
-                tolerance=tasks.get("tolerance"),
                 blacklist=blacklist,
+                model=args.model,
+                filename=args.filename,
+                run_async=args.run_async,
+                num_threads=args.num,
+                show=args.show,
                 strict=strict,
+                threshold=tasks.get("threshold"),
             )
 
             if not data:
                 logger.warning("[ProcessWarn] cannot found any domains")
                 return
 
-            params = [[v, tasks.get("persists").get(k), k, 5] for k, v in data.items() if v]
+            # all persist config
+            persists = tasks.get("persists", {})
+            if not persists or not isinstance(persists, dict):
+                persists = dict()
+
+            params = [[v, persists.get(k), k, 5] for k, v in data.items() if v]
+            cleaned = os.environ.get("NO_PARAMS", "false") in ["true", "1"]
 
             # support event-stream sites
             isolation = tasks.get("stream", {}).get("isolation", False)
             name = tasks.get("stream", {}).get("persist", "")
-            fastpersist = tasks.get("persists").get(name, {})
-            if isolation and fastpersist:
+            streaming = persists.get(name, {})
+
+            if isolation and streaming:
                 sites = data.get(AVAILABLES, "")
-                flag = os.environ.get("NO_PARAMS", "false") in ["true", "1"]
-                fastly = [x.split("?")[0] if flag else x for x in sites.split(",") if "stream=true" in x]
+                fastly = [x.split("?")[0] if cleaned else x for x in sites.split(",") if "stream=true" in x]
 
                 logger.info(f"[ProcessInfo] collected {len(fastly)} faster sites that support event-stream")
                 text = ",".join(fastly)
                 if text:
-                    params.append([text, fastpersist, name, 5])
+                    params.append([text, streaming, name, 5])
+
+            # save by model version classification
+            versioned = tasks.get("versioned", {})
+            if not versioned or not isinstance(versioned, dict):
+                versioned = {}
+
+            if versioned.get("enable", True):
+                for i in interactive.support_version():
+                    key, flag = f"gpt{i}", f"version={i}"
+                    if key not in versioned:
+                        continue
+
+                    group = persists.get(versioned.get(key), {})
+                    if not group:
+                        continue
+
+                    items = [
+                        x.split("?")[0] if cleaned else remove_url_param(url=x, key="version")
+                        for x in sites.split(",")
+                        if flag in x
+                    ]
+                    text = ",".join(items)
+                    if text:
+                        params.append([text, group, key, 5])
 
             cpu_count = multiprocessing.cpu_count()
             num = len(params) if len(params) <= cpu_count else cpu_count
@@ -387,11 +340,9 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             page_tasks[k] = v.get("params", {})
 
     threshold = max(int(data.get("threshold", 72)), 1)
-    tolerance = max(int(data.get("tolerance", 3)), 1)
     data.update(
         {
             "threshold": threshold,
-            "tolerance": tolerance,
             "scripts": script_tasks,
             "pages": page_tasks,
             "persists": groups,
@@ -470,7 +421,7 @@ def intercept(sites: list[str], blacklist: str = "") -> list[str]:
             logger.error(f"[InterceptError] blacklist=[{blacklist}] is invalid")
 
     for site in sites:
-        if pattern and pattern.search(site):
+        if not urlvalidator.isurl(site) or (pattern and pattern.search(site)):
             continue
 
         hostname = parse.urlparse(url=site).netloc
@@ -481,14 +432,7 @@ def intercept(sites: list[str], blacklist: str = "") -> list[str]:
     return list(dataset.values())
 
 
-def batch_probe(
-    urls: list[str],
-    candidates: dict,
-    threshold: int,
-    tolerance: int,
-    blacklist: dict = {},
-    strict: bool = True,
-) -> dict:
+def detect(urls: list[str], candidates: dict, blacklist: dict = {}, **kwargs) -> dict:
     if not urls and not candidates:
         return {}
 
@@ -497,323 +441,95 @@ def batch_probe(
     urls.extend(candidates.keys())
 
     # automatically add sites whose failure times exceed the threshold to the blacklist
-    auto_addblack, regex = blacklist.get("auto", False), blacklist.get("regex", "")
+    blacklist = {} if not isinstance(blacklist, dict) else blacklist
+    auto_addblack = blacklist.get("auto", False)
+    regex = blacklist.get("regex", "")
+
     sites = intercept(sites=urls, blacklist=regex)
+    starttime = time.time()
     logger.info(f"[ProbeSites] starting sites probe, count: {len(sites)}")
 
-    with multiprocessing.Manager() as manager:
-        collections, blacksites, potentials, processes = (
-            manager.list(),
-            manager.list(),
-            manager.dict(),
-            [],
-        )
-        semaphore, starttime = multiprocessing.Semaphore(max(50, 1)), time.time()
-        for site in sites:
-            semaphore.acquire()
-            p = multiprocessing.Process(
-                target=check,
-                args=(
-                    site,
-                    candidates,
-                    threshold,
-                    auto_addblack,
-                    collections,
-                    blacksites,
-                    potentials,
-                    semaphore,
-                    tolerance,
-                    strict,
-                ),
-            )
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
+    items = interactive.batch_probe(
+        candidates=sites,
+        model=kwargs.get("model", ""),
+        filename=kwargs.get("filename", ""),
+        standard=False,
+        run_async=kwargs.get("run_async", True),
+        show_progress=kwargs.get("show", False),
+        num_threads=kwargs.get("num_threads", 0),
+    )
 
-        availables = list(collections)
-        cost = "{:.2f}s".format(time.time() - starttime)
-        logger.info(f"[ProbeInfo] collect finished, cost: {cost}, found {len(availables)} sites")
+    threshold = max(1, kwargs.get("threshold", 7))
+    potentials, blacksites = {}, []
+    availables = parse_domains(items)
+    overalls = parse_domains(sites)
 
-        if auto_addblack:
-            logger.warning(f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {list(blacksites)}")
-        else:
-            logger.warning(f"[ProbeWarn] {len(blacksites)} sites need confirmation: {list(blacksites)}")
-
-        data = {
-            AVAILABLES: ",".join(availables),
-            CANDIDATES: json.dumps(dict(potentials)),
-        }
-
-        persist = blacklist.get("persist", "")
-        if auto_addblack and len(blacksites) > 0 and persist:
-            data[persist] = merge_blacklist(regex, list(blacksites))
-
-        return data
-
-
-def check(
-    url: str,
-    candidates: dict,
-    threshold: int,
-    auto_addblack: bool,
-    availables: ListProxy,
-    blacksites: ListProxy,
-    potentials: DictProxy,
-    semaphore: Semaphore,
-    tolerance: int,
-    strict: bool,
-) -> None:
-    try:
-        # record start time
-        starttime = time.time()
-
-        # detect connectivity
-        status, apipath = judge(url=url, strict=strict, retry=2, tolerance=tolerance)
-
-        # record spend time
-        cost = time.time() - starttime
-        domain = utils.extract_domain(url=url, include_protocal=True)
-        message = "[CheckInfo] finished check, site: {} status: {} cost: {:.2f}s".format(domain, status, cost)
-        if status:
-            logger.info(message)
-        else:
-            logger.error(message)
-
-        candidates = {} if candidates is None else candidates
-        # reachable
-        if status:
-            availables.append(apipath)
-            return
-
-        # response status code is 200 but return html content
-        reuslt = parse.urlparse(url)
-        site, path = reuslt.netloc, reuslt.path
-        if apipath and url not in candidates:
-            site = site if auto_addblack else apipath
-            blacksites.append(site)
-            return
-
-        # comes from a crawler and fails any api test
-        if not path or path == "/":
-            return
-
-        defeat = candidates.get(url).get("defeat", 0) + 1 if url in candidates else 1
-        if defeat <= threshold:
-            potentials[url] = {"defeat": defeat}
-        elif auto_addblack:
-            blacksites.append(parse.urlparse(url).netloc)
-    finally:
-        if semaphore is not None:
-            semaphore.release()
-
-
-def parse_url(url: str) -> tuple[bool, str, list[GPTProvider]]:
-    if not isurl(url):
-        return False, "", [GPTProvider.UNKNOWN]
-
-    result = parse.urlparse(url=url)
-    full, modes = result.path and result.path != "/", [GPTProvider.UNKNOWN]
-    apipath = f"{result.scheme}://{result.netloc}"
-    if full:
-        apipath = f"{apipath}{result.path}"
-        modes = COMMON_PATH_MODE.get(result.path, modes)
-
-    if result.query:
-        params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
-        provider = query_provider(params.get("mode", ""))
-        modes = [provider] if provider != GPTProvider.UNKNOWN else modes
-
-    return full, apipath, modes
-
-
-def generate_tasks(url: str) -> list[tuple[str, GPTProvider]]:
-    full, apipath, modes = parse_url(url=url)
-    if not apipath:
-        return []
-
-    flag = len(modes) > 0 and GPTProvider.UNKNOWN not in modes
-    if full:
-        if flag:
-            return [(apipath, x) for x in modes]
-        else:
-            return [(apipath, x) for x in COMMON_PAYLOAD.keys()]
-
-    # try common combinations first for speedup
-    combinations, mostlikely = [], []
-    for k, v in COMMON_PATH_MODE.items():
-        link = f"{apipath}{k}"
-        if GPTProvider.OPENAI not in v:
-            v.append(GPTProvider.OPENAI)
-
-        mostlikely.append((link, v[0]))
-        combinations.extend([(link, x) for x in v[1:]])
-
-    # combine
-    combinations.extend([(f"{apipath}{x}", y) for x in COMMON_PATH_MODE.keys() for y in COMMON_PAYLOAD.keys()])
-
-    mostlikely.extend(combinations)
-    # remove duplicates and return in original order
-    tasks = list(set(mostlikely))
-    tasks.sort(key=mostlikely.index)
-    return tasks
-
-
-def read_response(response: HTTPResponse, key: str = "", expected: int = 200) -> Any:
-    if not response or type(response) != HTTPResponse:
-        return None
-
-    success = expected == response.getcode()
-    if not success:
-        return None
-    try:
-        content = response.read().decode("UTF8")
-        data = json.loads(content)
-        return data if not key else data.get(key, None)
-    except:
-        return None
-
-
-def judge(url: str, strict: bool = True, retry: int = 2, tolerance: int = 3) -> tuple[bool, str]:
-    """
-    Judge whether the website is valid and sniff api path
-    """
-    tasks, tolerance = generate_tasks(url=url), max(tolerance, 1)
-    if not tasks:
-        return False, ""
-
-    error, notfound = 0, 0
-    for apipath, mode in tasks:
-        body, headers = COMMON_PAYLOAD.get(mode), {"Referer": apipath}
-        headers.update(HEADERS)
-
-        if mode == GPTProvider.PROXIEDOPENAI and apipath.endswith("/api/chat"):
-            prefix = apipath.rsplit("/", maxsplit=1)[0]
-            response = utils.http_post_noerror(url=f"{prefix}/user", params={"authcode": ""})
-            authcode = read_response(response=response, key="authCode")
-
-            # x-auth-code
-            if authcode and type(authcode) == str:
-                headers["x-auth-code"] = authcode
-
-            response = utils.http_post_noerror(url=f"{prefix}/models", params={"key": ""})
-            models = read_response(response=response, key="")
-            if models and type(models) == list:
-                models.sort(key=lambda x: x.get("id", ""))
-                body["model"] = models[0]
-
-        link = f"{apipath}?mode={mode.name.lower()}"
-
-        try:
-            timeout = max(12 - 2.5 * (error + notfound), 6)
-            response, exitcode = utils.http_post(
-                url=apipath,
-                headers=headers,
-                params=body,
-                retry=retry,
-                timeout=timeout,
-            )
-
-            # reduce unnecessary attempts to speed up
-            if exitcode > 0:
-                if exitcode == 2:
-                    notfound += 1
-                elif exitcode == 3:
-                    error += 1
-            if (notfound + error) >= len(COMMON_PATH_MODE):
-                logger.error(f"[JudgeError] not found any valid url path in site={url}")
-                return False, ""
-            if error > tolerance:
-                logger.error(f"[JudgeError] site={url} reached maximum allowable errors: {tolerance}")
-                return False, ""
-
-            if not response or response.getcode() != 200:
-                continue
-
-            link = f"{link}&auth=true" if "x-auth-code" in headers else link
-            content_type = response.headers.get("content-type", "")
-            if "text/html" in content_type:
-                logger.warning(f"[JudgeWarn] site=[{link}] access success but return html content")
-                return False, link
-
-            allow_origin = response.headers.get("Access-Control-Allow-Origin", "*")
-            if allow_origin and allow_origin != "*":
-                logger.warning(f"[JudeWarn] site=[{link}] access success but only support origin {allow_origin}")
-                return False, link
-
-            content = response.read().decode("UTF8")
-            if not content:
-                continue
-
-            # return directly without further analysis
-            keywords = "ChatGPT"
-            if "text/event-stream" in content_type and verify_eventstream(content=content, strict=strict):
-                link = f"{link}&stream=true"
-                keywords += "|finish_reason|chatcmpl-"
-
-            match = re.search(keywords, content, flags=re.I)
-            return match is not None, link
-
-            # if not re.search("ChatGPT", content, flags=re.I):
-            #     logger.warning(
-            #         f"[JudgeWarn] site=[{link}] access success but returned content irrelevant to the question"
-            #     )
-            #     return False, link
-
-            # if not content_type or "text/plain" in content_type:
-            #     if "invalid_request_error" in content:
-            #         continue
-
-            #     return True, link
-            # try:
-            #     index = content.rfind("\n", 0, len(content) - 2)
-            #     text = content if index < 0 else content[index + 1 :]
-            #     data, keys = json.loads(text), set(["id", "role", "text", "delta"])
-
-            #     # check whether data's keys include 'id', 'role', 'text' or 'delta'
-            #     if not keys.isdisjoint(set(data.keys())):
-            #         return True, link
-            # except:
-            #     if (
-            #         re.search(
-            #             r'"role":(\s+)?".*",(\s+)?"id":(\s+)?"[A-Za-z0-9\-]+"|"delta":(\s+)?{"content":(\s+)?"([\s\S]*?)"',
-            #             content,
-            #         )
-            #         or '"text":"ChatGPT is' in content
-            #     ):
-            #         return True, link
-            #     else:
-            #         logger.error(
-            #             f"[JudgeError] url: {apipath} mode: {mode.name} message: {content}"
-            #         )
-        except Exception as e:
-            logger.error(f"[JudgeError] url: {apipath} mode: {mode.name} message: {str(e)}")
-
-    return False, ""
-
-
-def verify_eventstream(content: str, strict: bool = True) -> bool:
-    content, flag = utils.trim(content), "data:"
-    lines = content.split("\n")
-
-    for i in range(len(lines)):
-        line = utils.trim(lines[i])
-        if not line:
+    for k, v in overalls.items():
+        if not k or not v or k in availables or v not in candidates:
             continue
 
-        texts = line.split(sep=flag, maxsplit=1)
-        if strict and len(texts) != 2:
-            return False
+        defeat = candidates.get(v).get("defeat", 0) + 1 if v in candidates else 1
+        if defeat <= threshold:
+            potentials[v] = {"defeat": defeat}
+        elif auto_addblack:
+            blacksites.append(k)
 
-        # ignore the last line because usually it is "data: [DONE]"
-        if i != len(lines) - 1:
-            text = texts[1] if len(texts) == 2 else texts[0]
+    cost = "{:.2f}s".format(time.time() - starttime)
+    logger.info(f"[ProbeInfo] collect finished, cost: {cost}, found {len(items)} sites")
 
-            try:
-                _ = json.loads(text)
-            except:
-                return False
-    return True
+    if auto_addblack:
+        logger.warning(f"[ProbeWarn] add {len(blacksites)} sites to blacklist: {blacksites}")
+    else:
+        logger.warning(f"[ProbeWarn] {len(blacksites)} sites need confirmation: {blacksites}")
+
+    data = {
+        AVAILABLES: ",".join(items),
+        CANDIDATES: json.dumps(potentials),
+    }
+
+    persist = blacklist.get("persist", "")
+    if auto_addblack and len(blacksites) > 0 and persist:
+        data[persist] = merge_blacklist(regex, list(blacksites))
+
+    return data
+
+
+def parse_domains(urls: list[str]) -> dict:
+    if not urls or not isinstance(urls, list):
+        return {}
+
+    domains = dict()
+    for url in urls:
+        domain = utils.extract_domain(url=url, include_protocal=False)
+        if domain:
+            domains[domain] = url
+
+    return domains
+
+
+def remove_url_param(url: str, key: str) -> str:
+    url, key = utils.trim(url), utils.trim(key)
+    if not url or not key:
+        return url
+
+    try:
+        result = parse.urlparse(url)
+        params = parse.parse_qs(result.query)
+        params.pop(key, None)
+
+        query = parse.urlencode(params, doseq=True)
+        return parse.urlunparse(
+            (
+                result.scheme,
+                result.netloc,
+                result.path,
+                result.params,
+                query,
+                result.fragment,
+            )
+        )
+    except:
+        return url
 
 
 if __name__ == "__main__":
@@ -821,6 +537,14 @@ if __name__ == "__main__":
     utils.load_dotenv()
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-a",
+        "--async",
+        dest="run_async",
+        action="store_true",
+        default=False,
+        help="run with asynchronous mode",
+    )
 
     parser.add_argument(
         "-c",
@@ -831,5 +555,40 @@ if __name__ == "__main__":
         help="remote config file",
     )
 
-    args = parser.parse_args()
-    process(url=args.config)
+    parser.add_argument(
+        "-f",
+        "--filename",
+        type=str,
+        required=False,
+        default="",
+        help="final available API save file name",
+    )
+
+    parser.add_argument(
+        "-m",
+        "--model",
+        type=str,
+        required=False,
+        default="gpt-3.5-turbo",
+        help="model name to chat with",
+    )
+
+    parser.add_argument(
+        "-n",
+        "--num",
+        type=int,
+        required=False,
+        default=512,
+        help="number of concurrent threads, default twice the number of CPU",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--show",
+        dest="show",
+        action="store_true",
+        default=False,
+        help="show check progress bar",
+    )
+
+    process(args=parser.parse_args())

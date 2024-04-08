@@ -26,7 +26,7 @@ def fetch(params: dict) -> list[str]:
         return []
 
     try:
-        results = utils.multi_thread_collect(crawlone, tasks)
+        results = utils.multi_thread_run(crawlone, tasks)
         links = list(set(list(itertools.chain.from_iterable(results))))
         logger.info(f"[Carrot] crawl finished, found {len(links)} sites: {links}")
         return links

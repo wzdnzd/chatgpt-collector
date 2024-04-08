@@ -1,0 +1,626 @@
+# -*- coding: utf-8 -*-
+
+# @Author  : wzdnzd
+# @Time    : 2024-04-07
+
+import asyncio
+import gzip
+import json
+import os
+import re
+import time
+from dataclasses import dataclass
+from http.client import HTTPResponse
+from typing import Any
+from urllib import error, parse, request
+
+import aiofiles
+import aiohttp
+from tqdm import tqdm
+
+import utils
+from logger import logger
+
+KEYWORD = "ChatGPT is"
+
+
+@dataclass
+class CheckResult(object):
+    # 是否可用
+    available: bool
+
+    # 是否应该停止尝试
+    terminate: bool = False
+
+    # 是否支持流式响应
+    stream: bool = False
+
+    # 支持的模型版本
+    version: int = 0
+
+    # 模型不存在
+    notfound: bool = False
+
+
+def get_headers(domain: str) -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Path": "v1/chat/completions",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "application/json, text/event-stream",
+        "Referer": domain,
+        "Origin": domain,
+        "User-Agent": utils.USER_AGENT,
+    }
+
+
+def get_payload(model: str, stream: bool = True) -> dict:
+    return {
+        "model": model or "gpt-3.5-turbo",
+        "temperature": 0,
+        "max_tokens": 1000,
+        "top_p": 1,
+        "frequency_penalty": 1,
+        "presence_penalty": 1,
+        "stream": stream,
+        "messages": [
+            {
+                "role": "user",
+                "content": f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with '{KEYWORD}'!",
+            }
+        ],
+    }
+
+
+def get_model(version: int) -> str:
+    return "gpt-4" if version == 4 else "gpt-3.5-turbo"
+
+
+def support_version() -> list[int]:
+    return [3, 4]
+
+
+def parse_url(url: str) -> tuple[int, int]:
+    stream, version = -1, -1
+
+    url = utils.trim(url)
+    if url:
+        try:
+            result = parse.urlparse(url)
+            if result.query:
+                params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
+
+                if "stream" in params:
+                    stream = 1 if utils.trim(params.get("stream")).lower() in ["true", "1"] else 0
+
+                if "version" in params:
+                    text = utils.trim(params.get("version")).lower()
+                    version = int(text) if text.isdigit() else -1
+        except:
+            logger.error(f"[Interactive] invalid url: {url}")
+
+    return stream, version
+
+
+def get_urls(domain: str, standard: bool = False) -> list[str]:
+    domain = utils.trim(domain)
+    if not domain:
+        return []
+
+    try:
+        result = parse.urlparse(domain)
+        urls = list()
+
+        if not result.path or result.path == "/":
+            subpaths = (
+                ["/v1/chat/completions"]
+                if standard
+                else [
+                    "/v1/chat/completions",
+                    "/api/chat-stream",
+                    "/api/openai/v1/chat/completions",
+                ]
+            )
+
+            for subpath in subpaths:
+                url = parse.urljoin(domain, subpath)
+                urls.append(url)
+        else:
+            urls.append(f"{result.scheme}://{result.netloc}{result.path}")
+
+        return urls
+    except:
+        logger.error(f"[Interactive] skip due to invalid url: {domain}")
+        return []
+
+
+def chat(
+    url: str,
+    model: str = "gpt-3.5-turbo",
+    stream: bool = False,
+    token: str = "",
+    retry: int = 3,
+    timeout: int = 6,
+) -> CheckResult:
+    if not url:
+        return CheckResult(available=False, terminate=True)
+
+    headers = get_headers(domain=url)
+    token = utils.trim(token)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    model = utils.trim(model) or "gpt-3.5-turbo"
+    retry = 3 if retry < 0 else retry
+    timeout = 15 if timeout <= 0 else timeout
+
+    payload = get_payload(model=model, stream=stream)
+    data = json.dumps(payload).encode(encoding="UTF8")
+
+    response, count = None, 0
+    while not response and count < retry:
+        try:
+            opener = request.build_opener(utils.NoRedirect)
+            response = opener.open(request.Request(url=url, data=data, headers=headers, method="POST"), timeout=timeout)
+        except error.HTTPError as e:
+            if e.code in [400, 401]:
+                return CheckResult(available=False, terminate=True)
+
+            try:
+                content = e.read().decode("UTF8")
+            except UnicodeDecodeError:
+                content = gzip.decompress(e.read()).decode("UTF8")
+            except:
+                content = ""
+
+            if no_model(content=content):
+                return CheckResult(available=False, terminate=True, notfound=True)
+        except error.URLError as e:
+            return CheckResult(available=False, terminate=True)
+        except Exception:
+            pass
+
+        count += 1
+
+    if not response or response.getcode() != 200:
+        return CheckResult(available=False)
+
+    text = response.read()
+    try:
+        content = text.decode(encoding="UTF8")
+    except UnicodeDecodeError:
+        content = gzip.decompress(text).decode("UTF8")
+    except:
+        content = ""
+
+    content_type = response.headers.get("content-type", "")
+    return verify(
+        content=content,
+        content_type=content_type,
+        stream=stream,
+        model=model,
+        keyword=KEYWORD,
+        strict=True,
+    )
+
+
+async def chat_async(
+    url: str,
+    model: str = "gpt-3.5-turbo",
+    stream: bool = False,
+    token: str = "",
+    retry: int = 3,
+    timeout: int = 6,
+    interval: float = 3,
+) -> CheckResult:
+    if not url:
+        return CheckResult(available=False, terminate=True)
+    if retry <= 0:
+        return CheckResult(available=False)
+
+    headers = get_headers(domain=url)
+    token = token.strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    model = model.strip() or "gpt-3.5-turbo"
+    payload = get_payload(model=model, stream=stream)
+    timeout = 6 if timeout <= 0 else timeout
+    interval = max(0, interval)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
+                if response.status != 200:
+                    terminal = response.status in [400, 401]
+                    try:
+                        content = await response.text()
+                        notfound = no_model(content=content)
+                    except asyncio.TimeoutError:
+                        notfound = False
+
+                    return CheckResult(available=False, terminate=terminal, notfound=notfound)
+
+                content = ""
+                try:
+                    content = await response.text()
+                except asyncio.TimeoutError:
+                    await asyncio.sleep(interval)
+                    return await chat_async(url, model, stream, token, retry - 1, min(timeout + 10, 90), interval)
+
+                content_type = response.headers.get("content-type", "")
+                return verify(
+                    content=content,
+                    content_type=content_type,
+                    stream=stream,
+                    model=model,
+                    keyword=KEYWORD,
+                    strict=True,
+                )
+    except:
+        await asyncio.sleep(interval)
+        return await chat_async(url, model, stream, token, retry - 1, timeout, interval)
+
+
+def check(
+    domain: str, filename: str = "", standard: bool = False, model: str = "gpt-3.5-turbo", detect: bool = True
+) -> str:
+    target, urls = "", get_urls(domain=domain, standard=standard)
+    stream, version = False, 0
+    x, y = parse_url(url=domain)
+
+    for url in urls:
+        # available check
+        result = chat(url=url, model=model, timeout=30, stream=x == 1)
+        if result.available:
+            target, stream, version = url, result.stream, result.version
+            break
+        elif result.notfound:
+            logger.warning(f"[Interactive] url {url} available but no {model} model exists")
+            break
+        elif result.terminate:
+            # if terminal is true, all attempts should be aborted immediately
+            break
+
+    if not target:
+        return ""
+
+    if detect:
+        if x == -1:
+            # stream support check
+            result = chat(url=target, model=model, timeout=30, stream=True)
+            stream = result.stream or stream
+        else:
+            stream = stream or x == 1
+
+        if y == -1 and not model.startswith("gpt-4"):
+            # version check
+            result = chat(url=target, model=get_model(version=4), timeout=30, stream=False)
+            version = result.version if result.available else version
+        else:
+            version = y
+
+    target = f"{target}?stream={str(stream).lower()}&version={version}"
+    filename = utils.trim(filename)
+
+    if target and filename:
+        utils.write_file(filename=filename, lines=target, overwrite=False)
+
+    return target
+
+
+def check_concurrent(
+    sites: list[str],
+    filename: str = "",
+    standard: bool = False,
+    model: str = "gpt-3.5-turbo",
+    num_threads: int = -1,
+    show_progress: bool = False,
+    index: int = 0,
+) -> list[str]:
+    if not sites or not isinstance(sites, list):
+        logger.warning(f"[Interactive] skip process due to lines is empty")
+        return []
+
+    filename = utils.trim(filename)
+    model = utils.trim(model) or "gpt-3.5-turbo"
+    index = max(0, index)
+    tasks = [[x, filename, standard, model, True] for x in sites if x]
+
+    result = utils.multi_thread_run(
+        func=check,
+        tasks=tasks,
+        num_threads=num_threads,
+        show_progress=show_progress,
+        description=f"Chunk-{index}",
+    )
+
+    return [x for x in result if x]
+
+
+async def check_async(
+    sites: list[str],
+    filename: str = "",
+    standard: bool = False,
+    model: str = "gpt-3.5-turbo",
+    concurrency: int = 512,
+    show_progress: bool = True,
+) -> list[str]:
+    async def checkone(
+        domain: str,
+        filename: str,
+        semaphore: asyncio.Semaphore,
+        model: str = "gpt-3.5-turbo",
+        detect: bool = True,
+    ) -> str:
+        async with semaphore:
+            target, urls = "", get_urls(domain=domain, standard=standard)
+            stream, version = False, 0
+            x, y = parse_url(url=domain)
+
+            for url in urls:
+                # available check
+                result = await chat_async(url=url, model=model, stream=x == 1, timeout=30, interval=3)
+                if result.available:
+                    target, stream, version = url, result.stream, result.version
+                    break
+                elif result.notfound:
+                    logger.warning(f"[Interactive] url {url} available but no {model} model exists")
+                    break
+                elif result.terminate:
+                    # if terminal is true, all attempts should be aborted immediately
+                    break
+
+            if not target:
+                return ""
+
+            if detect:
+                if x == -1:
+                    # stream support check
+                    result = await chat_async(url=url, model=model, stream=True, timeout=30, interval=3)
+                    stream = result.stream or stream
+                else:
+                    stream = stream or x == 1
+
+                if y == -1 and not model.startswith("gpt-4"):
+                    # version check
+                    result = await chat_async(url=url, model=get_model(version=4), stream=False, timeout=30, interval=3)
+                    version = result.version if result.available else version
+                else:
+                    version = y
+
+            target = f"{target}?stream={str(stream).lower()}&version={version}"
+
+            if target and filename:
+                directory = os.path.dirname(filename)
+                if not os.path.exists(directory) or not os.path.isdir(directory):
+                    os.makedirs(directory, exist_ok=True)
+
+                async with aiofiles.open(filename, mode="a+", encoding="utf8") as f:
+                    await f.write(target + "\n")
+                    await f.flush()
+
+            return target
+
+    if not sites or not isinstance(sites, (list, tuple)):
+        logger.error(f"[Interactive] skip check due to domains is empty")
+        return []
+
+    filename = utils.trim(filename)
+    model = utils.trim(model) or "gpt-3.5-turbo"
+
+    concurrency = 256 if concurrency <= 0 else concurrency
+    semaphore = asyncio.Semaphore(concurrency)
+
+    logger.info(f"[Interactive] start asynchronous execution of the detection tasks, total: {len(sites)}")
+    starttime = time.time()
+
+    if show_progress:
+        # show progress bar
+        tasks, targets = [], []
+        for site in sites:
+            tasks.append(asyncio.create_task(checkone(site, filename, semaphore, model, True)))
+
+        pbar = tqdm(total=len(tasks), desc="Processing", unit="task")
+        for task in asyncio.as_completed(tasks):
+            target = await task
+            if target:
+                targets.append(target)
+
+            pbar.update(1)
+
+        pbar.close()
+    else:
+        # no progress bar
+        tasks = [checkone(domain, filename, semaphore, model, True) for domain in sites if domain]
+        targets = [x for x in await asyncio.gather(*tasks)]
+
+    logger.info(f"[Interactive] async check completed, cost: {time.time()-starttime:.2f}s")
+    return targets
+
+
+def batch_probe(
+    candidates: list[str],
+    model: str = "gpt-3.5-turbo",
+    filename: str = "",
+    standard: bool = False,
+    run_async: bool = True,
+    show_progress: bool = False,
+    num_threads: int = 0,
+    chunk: int = 512,
+) -> list[str]:
+    if not candidates or not isinstance(candidates, list):
+        return []
+
+    # run as async
+    if run_async:
+        sites = asyncio.run(
+            check_async(
+                sites=candidates,
+                filename=filename,
+                standard=standard,
+                model=model,
+                concurrency=num_threads,
+                show_progress=show_progress,
+            )
+        )
+    # concurrent check
+    elif len(candidates) <= chunk:
+        sites = check_concurrent(
+            sites=candidates,
+            filename=filename,
+            standard=standard,
+            model=model,
+            num_threads=num_threads,
+            show_progress=show_progress,
+        )
+    # sharding
+    else:
+        slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
+        tasks = [[x, filename, standard, model, num_threads, False, show_progress] for x in slices]
+        results = utils.multi_process_run(func=check_concurrent, tasks=tasks)
+        sites = [x for r in results if r for x in r]
+
+    return [x for x in sites if x]
+
+
+def read_response(response: HTTPResponse, expected: int = 200, deserialize: bool = False, key: str = "") -> Any:
+    if not response or not isinstance(response, HTTPResponse):
+        return None
+
+    success = expected <= 0 or expected == response.getcode()
+    if not success:
+        return None
+    try:
+        content = response.read().decode("UTF8")
+    except UnicodeDecodeError:
+        content = gzip.decompress(response.read()).decode("UTF8")
+    except:
+        content = ""
+
+    if not deserialize:
+        return content
+
+    if not content:
+        return None
+    try:
+        data = json.loads(content)
+        return data if not key else data.get(key, None)
+    except:
+        return None
+
+
+def no_model(content: str) -> bool:
+    content = utils.trim(content)
+    if not content:
+        return False
+
+    return re.search(r"model_not_found|对于模型.*?无可用渠道", content, flags=re.I) is not None
+
+
+def verify(
+    content: str,
+    content_type: str,
+    stream: bool,
+    model: str,
+    keyword: str = KEYWORD,
+    strict: bool = False,
+) -> CheckResult:
+    def extract_message(content: str) -> tuple[bool, str, str]:
+        if not content:
+            return False, "", ""
+
+        try:
+            data = json.loads(content)
+            name = data.get("model", "")
+
+            # extract message
+            choices = data.get("choices", [])
+            if not choices or not isinstance(choices, list):
+                return False, "", name
+
+            delta, support = None, False
+            if "delta" in choices[0]:
+                delta = choices[0].get("delta", {})
+                support = True
+            elif "message" in choices[0]:
+                delta = choices[0].get("message", {})
+                support = False
+
+            if delta is None or not isinstance(delta, dict):
+                return False, "", name
+
+            message = delta.get("content", "")
+            return support, message, name
+        except:
+            return False, "", ""
+
+    def get_version(model: str) -> int:
+        model = utils.trim(model)
+        if not model:
+            return 0
+
+        return 4 if model.startswith("gpt-4") else 3
+
+    def support_stream(content: str, strict: bool) -> tuple[bool, str, str]:
+        if not content:
+            return False, "", ""
+
+        support, words, model = True, [], ""
+        flag, lines = "data:", content.split("\n")
+
+        for i in range(len(lines)):
+            line = utils.trim(lines[i])
+            if not line:
+                continue
+
+            texts = line.split(sep=flag, maxsplit=1)
+            if strict and len(texts) != 2:
+                support = False
+
+            text = utils.trim(texts[1] if len(texts) == 2 else texts[0])
+
+            # ignore the last line because usually it is "data: [DONE]"
+            if text == "[DONE]":
+                continue
+
+            success, message, name = extract_message(content=text)
+            if not success:
+                support = False
+
+            model = model or name
+            words.append(message)
+
+        return support, "".join(words), model
+
+    content = utils.trim(content)
+    if not content:
+        return CheckResult(available=False)
+
+    content_type = utils.trim(content_type)
+    model = utils.trim(model)
+    text, support = content, False
+
+    if "text/event-stream" in content_type:
+        support, text, name = support_stream(content=content, strict=strict)
+        model = name or model
+    elif "application/json" in content_type or "text/plain" in content_type:
+        content = re.sub(r"^```json\n|\n```$", "", text, flags=re.MULTILINE)
+        support, message, name = extract_message(content=content)
+        text = message or content
+        model = name or model
+
+    available = re.search(keyword, text, flags=re.I) is not None
+    model = "" if not available else model
+    version = get_version(model=model)
+
+    # adapt old nextweb, content_type is empty but support stream
+    if stream and available:
+        support = True
+    elif not available:
+        support = False
+
+    not_exists = no_model(content=content)
+    terminal = available or not_exists
+    return CheckResult(available=available, stream=support, version=version, terminate=terminal, notfound=not_exists)
