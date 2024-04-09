@@ -8,10 +8,10 @@ import json
 import os
 from datetime import datetime
 
+import pipeline
 import push
 import utils
 from logger import logger
-from scripts import nextweb
 
 
 def main(args: argparse.Namespace) -> None:
@@ -71,7 +71,7 @@ def main(args: argparse.Namespace) -> None:
 
     os.environ["LOCAL_MODE"] = "true"
 
-    sites = nextweb.collect(params=params)
+    sites = pipeline.collect(params=params)
     if sites and args.backup:
         directory = utils.trim(args.directory)
         if not directory:
@@ -92,6 +92,10 @@ def main(args: argparse.Namespace) -> None:
         utils.write_file(filename=filepath, lines=sites, overwrite=True)
 
         logger.info(f"[CMD] collect finished, {len(sites)} sites have been saved to {filepath}")
+
+    if sites and args.join:
+        text = ",".join(sites)
+        logger.info(f"[CMD] collect finished, sites: {text}")
 
 
 if __name__ == "__main__":
@@ -168,6 +172,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="skip check availability if true",
+    )
+
+    parser.add_argument(
+        "-j",
+        "--join",
+        dest="join",
+        action="store_true",
+        default=False,
+        help="concatenate the results together separated by commas",
     )
 
     parser.add_argument(
