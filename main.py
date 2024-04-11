@@ -291,6 +291,9 @@ def process(args: argparse.Namespace) -> None:
                         for x in sites.split(",")
                         if flag in x
                     ]
+
+                    logger.info(f"[ProcessInfo] collected {len(items)} sites for group {key}")
+
                     text = ",".join(items)
                     if text:
                         params.append([text, group, key, 5])
