@@ -42,6 +42,21 @@ class CheckResult(object):
     notfound: bool = False
 
 
+@dataclass
+class RequestParams(object):
+    # 是否支持流式输出
+    stream: int = -1
+
+    # 模型版本
+    version: int = -1
+
+    # 访问令牌
+    token: str = ""
+
+    # 模型名称
+    model: str = "gpt-3.5-turbo"
+
+
 def get_headers(domain: str) -> dict:
     return {
         "Content-Type": "application/json",
@@ -81,8 +96,8 @@ def support_version() -> list[int]:
     return [3, 4]
 
 
-def parse_url(url: str) -> tuple[int, int]:
-    stream, version = -1, -1
+def parse_url(url: str) -> RequestParams:
+    stream, version, token, model = -1, -1, "", ""
 
     url = utils.trim(url)
     if url:
@@ -97,10 +112,17 @@ def parse_url(url: str) -> tuple[int, int]:
                 if "version" in params:
                     text = utils.trim(params.get("version")).lower()
                     version = int(text) if text.isdigit() else -1
+
+                if "token" in params:
+                    token = utils.trim(params.get("token"))
+
+                if "model" in params:
+                    text = utils.trim(params.get("model"))
+                    model = text if text else model
         except:
             logger.error(f"[Interactive] invalid url: {url}")
 
-    return stream, version
+    return RequestParams(stream=stream, version=version, token=token, model=model)
 
 
 def get_urls(domain: str, standard: bool = False) -> list[str]:
@@ -268,11 +290,13 @@ def check(
 ) -> str:
     target, urls = "", get_urls(domain=domain, standard=standard)
     stream, version = False, 0
-    x, y = parse_url(url=domain)
+
+    params = parse_url(url=domain)
+    model = params.model or model or "gpt-3.5-turbo"
 
     for url in urls:
         # available check
-        result = chat(url=url, model=model, timeout=30, stream=x == 1)
+        result = chat(url=url, model=model, timeout=30, stream=params.stream == 1, token=params.token)
         if result.available:
             target, stream, version = url, result.stream, result.version
             break
@@ -287,21 +311,21 @@ def check(
         return ""
 
     if detect:
-        if x == -1:
+        if params.stream == -1:
             # stream support check
-            result = chat(url=target, model=model, timeout=30, stream=True)
+            result = chat(url=target, model=model, timeout=30, stream=True, token=params.token)
             stream = result.stream or stream
         else:
-            stream = stream or x == 1
+            stream = stream or params.stream == 1
 
-        if y == -1 and not model.startswith("gpt-4"):
+        if params.version == -1 and not model.startswith("gpt-4"):
             # version check
-            result = chat(url=target, model=get_model(version=4), timeout=30, stream=False)
+            result = chat(url=target, model=get_model(version=4), timeout=30, stream=False, token=params.token)
             version = result.version if result.available else version
         else:
-            version = y
+            version = params.version
 
-    target = f"{target}?stream={str(stream).lower()}&version={version}"
+    target = concat_url(url=target, stream=stream, version=version, token=params.token, model=params.model)
     filename = utils.trim(filename)
 
     if target and filename:
@@ -357,11 +381,20 @@ async def check_async(
         async with semaphore:
             target, urls = "", get_urls(domain=domain, standard=standard)
             stream, version = False, 0
-            x, y = parse_url(url=domain)
+
+            params = parse_url(url=domain)
+            model = params.model or model or "gpt-3.5-turbo"
 
             for url in urls:
                 # available check
-                result = await chat_async(url=url, model=model, stream=x == 1, timeout=30, interval=3)
+                result = await chat_async(
+                    url=url,
+                    model=model,
+                    stream=params.stream == 1,
+                    token=params.token,
+                    timeout=30,
+                    interval=3,
+                )
                 if result.available:
                     target, stream, version = url, result.stream, result.version
                     break
@@ -376,22 +409,35 @@ async def check_async(
                 return ""
 
             if detect:
-                if x == -1:
+                if params.stream == -1:
                     # stream support check
-                    result = await chat_async(url=url, model=model, stream=True, timeout=30, interval=3)
+                    result = await chat_async(
+                        url=url,
+                        model=model,
+                        stream=True,
+                        token=params.token,
+                        timeout=30,
+                        interval=3,
+                    )
                     stream = result.stream or stream
                 else:
-                    stream = stream or x == 1
+                    stream = stream or params.stream == 1
 
-                if y == -1 and not model.startswith("gpt-4"):
+                if params.version == -1 and not model.startswith("gpt-4"):
                     # version check
-                    result = await chat_async(url=url, model=get_model(version=4), stream=False, timeout=30, interval=3)
+                    result = await chat_async(
+                        url=url,
+                        model=get_model(version=4),
+                        stream=False,
+                        token=params.token,
+                        timeout=30,
+                        interval=3,
+                    )
                     version = result.version if result.available else version
                 else:
-                    version = y
+                    version = params.version
 
-            target = f"{target}?stream={str(stream).lower()}&version={version}"
-
+            target = concat_url(url=target, stream=stream, version=version, token=params.token, model=params.model)
             if target and filename:
                 directory = os.path.dirname(filename)
                 if not os.path.exists(directory) or not os.path.isdir(directory):
@@ -519,6 +565,25 @@ def no_model(content: str) -> bool:
     return re.search(r"model_not_found|对于模型.*?无可用渠道", content, flags=re.I) is not None
 
 
+def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "") -> str:
+    url = utils.trim(url)
+    if not url:
+        return ""
+
+    version = 3 if version < 0 else version
+    target = f"{url}?stream={str(stream).lower()}&version={version}"
+
+    token = utils.trim(token)
+    if token:
+        target = f"{target}&token={token}"
+
+    model = utils.trim(model)
+    if model:
+        target = f"{target}&model={model}"
+
+    return target
+
+
 def verify(
     content: str,
     content_type: str,
@@ -561,7 +626,7 @@ def verify(
         if not model:
             return 0
 
-        return 4 if model.startswith("gpt-4") else 3
+        return 4 if model.startswith("gpt-4") or re.search(r"-4", model) is not None else 3
 
     def support_stream(content: str, strict: bool) -> tuple[bool, str, str]:
         if not content:
