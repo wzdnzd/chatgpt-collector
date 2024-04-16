@@ -371,8 +371,6 @@ def fetct_exist(persists: dict, pushtool: push.PushTo) -> dict:
             for site in content.split(","):
                 if not utils.isblank(site):
                     candidates[site] = {"defeat": 0}
-
-            continue
         elif k == CANDIDATES:
             try:
                 candidates.update(json.loads(content))
