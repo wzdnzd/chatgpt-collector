@@ -84,19 +84,15 @@ def query_forks_count(username: str, repository: str, retry: int = 3) -> int:
         logger.error(f"[NextWeb] invalid github username or repository")
         return -1
 
-    url = f"{GITHUB_API}/search/repositories?q=user:{username}+repo:{repository}+{repository}"
+    url = f"{GITHUB_API}/repos/{username}/{repository}"
     content = utils.http_get(url=url, headers=DEFAULT_HEADERS, retry=retry)
     if not content:
         logger.error(f"[NextWeb] failed to query forks count")
         return -1
 
     try:
-        items = json.loads(content).get("items", [])
-        if not items or type(items) != list:
-            logger.error(f"[NextWeb] cannot get forks count, message: {content}")
-            return -1
-
-        return items[0].get("forks_count", 0)
+        data = json.loads(content)
+        return data.get("forks_count", 0)
     except:
         logger.error(f"[NextWeb] occur error when parse forks count, message: {content}")
         return -1
@@ -206,6 +202,35 @@ def parse_site(
     return targets
 
 
+def real_deployment(url: str) -> str:
+    def rsplit_once(text: str, patterns: str) -> tuple[str, str, str]:
+        pattern = "|".join(f"(?:{p})" for p in patterns)
+        matches = list(re.finditer(pattern, text))
+
+        if not matches:
+            return text, "", ""
+
+        match = matches[-1]
+        word = match.group(0)
+        start, end = match.span()
+
+        return text[:start], text[end:], word
+
+    url = utils.trim(url)
+    if not url.endswith(".vercel.app"):
+        return url
+
+    patterns = ["-projects", "-team"]
+    left, right, keyword = rsplit_once(url, patterns)
+    if not keyword or not right:
+        return url
+
+    prefix, project, _ = rsplit_once(left, ["-[A-Za-z0-9]{9}-"])
+    target = f"{prefix}-{project}{keyword}{right}"
+
+    return target
+
+
 def extract_homepage(url: str) -> str:
     url = utils.trim(url).removesuffix("/deployments")
     if not url:
@@ -256,7 +281,7 @@ def extract_target(url: str, session: str, exclude: str = "") -> list[str]:
         except:
             logger.warning(f"[NextWeb] invalid exclude regex: {exclude}")
 
-        domains.append(domain)
+        domains.append(real_deployment(url=domain))
 
     return domains
 
@@ -290,7 +315,7 @@ def query_deployment_status(url: str, exclude: str = "") -> str:
             description = utils.trim(statuses[0].get("description", ""))
             success = re.search("checks for deployment have failed", description, flags=re.I) is not None
 
-        return target if success else ""
+        return real_deployment(url=target) if success else ""
     except:
         return ""
 
@@ -505,8 +530,11 @@ def collect(params: dict) -> list:
         # fetch last run time
         last = last_history(pushtool.raw_url(push_conf=modified), refresh)
 
+        # source repository deployments
+        deployments = [f"https://api.github.com/repos/{username}/{repository}/deployments"]
+
         # TODO: if it is possible to bypass the rate limiting measures of GitHub, asynchronous requests can be used
-        deployments = list_deployments(username, repository, last, sort)
+        deployments.extend(list_deployments(username, repository, last, sort))
 
         # add local existing deployments if necessary
         if overlay:
@@ -539,6 +567,17 @@ def collect(params: dict) -> list:
             )
             newsites = list(itertools.chain.from_iterable(materials))
             candidates.extend([x for x in newsites if x])
+
+            # deduplication
+            if os.path.exists(material_file) and os.path.isfile(material_file):
+                try:
+                    with open(material_file, "w+", encoding="utf8") as f:
+                        lines = list(set([x.replace("\n", "").strip().lower() for x in f.readlines() if x]))
+                        text = "\n".join(lines)
+                        f.write(text)
+                        f.flush()
+                except:
+                    logger.error(f"[NextWeb] failed to deduplication material file")
 
         # save last modified time
         if pushtool.validate(modified):
