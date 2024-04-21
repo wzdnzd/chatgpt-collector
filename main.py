@@ -421,6 +421,8 @@ def intercept(sites: list[str], blacklist: str = "") -> list[str]:
         except:
             logger.error(f"[InterceptError] blacklist=[{blacklist}] is invalid")
 
+    # deduplication and filter invalid sites
+    sites = list(set(sites))
     for site in sites:
         if not urlvalidator.isurl(site) or (pattern and pattern.search(site)):
             continue
