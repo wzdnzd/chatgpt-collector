@@ -4,6 +4,8 @@
 # @Time    : 2024-03-27
 
 import json
+import os
+import re
 import traceback
 from dataclasses import dataclass
 from urllib import request
@@ -12,6 +14,8 @@ from urllib.parse import urljoin
 
 import utils
 from logger import logger
+
+NOPECHA_KEY = utils.trim(os.environ.get("NOPECHA_KEY", ""))
 
 
 @dataclass
@@ -61,10 +65,14 @@ def checkin(params: dict) -> list[str]:
             except:
                 logger.error(f"[ONEAPI] invalid unit value: {option.get('unit')}, use default value 500000")
 
+        sitekey = utils.trim(option.get("sitekey", ""))
+        sitelink = utils.trim(option.get("sitelink", ""))
+        regex = utils.trim(option.get("done", ""))
+
         for item in tokens:
             token = utils.trim(item)
             if token:
-                tasks.append((url, path, token, unit))
+                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex))
             else:
                 logger.error(f"[ONEAPI] ignore invalid token: {item}, url: {url}")
 
@@ -88,15 +96,56 @@ def checkin(params: dict) -> list[str]:
     return []
 
 
-def checkin_one(base: str, path: str, token: str, unit: float, retry: int = 3) -> CheckInResult:
+def checkin_one(
+    base: str,
+    path: str,
+    token: str,
+    unit: float,
+    retry: int = 3,
+    sitekey: str = "",
+    sitelink: str = "",
+    done_regex: str = "",
+) -> CheckInResult:
     if not base or not token:
         logger.error(f"[ONEAPI] skip execute checkin because invalid url or token, url: {base}, token: {token}")
         return CheckInResult(url=base, success=False, token=token)
 
     headers = {"Authorization": f"Bearer {token}", "User-Agent": utils.USER_AGENT}
+    url = urljoin(base, path) if path else base
+
+    # to minimize potential nopecha calls, check ahead to see if you've already checked in
+    done_regex = utils.trim(done_regex) or "已经签到"
+    content = utils.http_get(url=url, headers=headers, expeced=202)
+    try:
+        if content and re.search(done_regex, content, flags=re.M) is not None:
+            logger.info(f"[ONEAPI] task was ignored because it had already been checked in, url: {url}")
+
+            return CheckInResult(url=base, success=False, token=token)
+    except:
+        pass
+
+    # skip cloudflare turnstile
+    sitekey = utils.trim(sitekey)
+    sitelink = utils.trim(sitelink)
+
+    if sitelink and not (sitelink.startswith("https://") or sitelink.startswith("http://")):
+        sitelink = urljoin(base, sitelink)
+
+    turnstile = ""
+    if NOPECHA_KEY and sitekey and sitelink:
+        try:
+            import nopecha
+
+            nopecha.api_key = NOPECHA_KEY
+
+            turnstile = nopecha.Token.solve(type="turnstile", sitekey=sitekey, url=sitelink)
+        except:
+            logger.error(f"[ONEAPI] skip cloudflare turnstile failed , url: {sitelink}")
+
+    if turnstile:
+        url = f"{url}?turnstile={turnstile}"
 
     # checkin
-    url = urljoin(base, path) if path else base
     response, retry = None, max(1, retry)
     while not response and retry > 0:
         retry -= 1
