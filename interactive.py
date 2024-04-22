@@ -598,7 +598,7 @@ def verify(
 
         try:
             data = json.loads(content)
-            name = data.get("model", "")
+            name = data.get("model", "") or ""
 
             # extract message
             choices = data.get("choices", [])
@@ -616,7 +616,7 @@ def verify(
             if delta is None or not isinstance(delta, dict):
                 return False, "", name
 
-            message = delta.get("content", "")
+            message = delta.get("content", "") or ""
             return support, message, name
         except:
             return False, "", ""

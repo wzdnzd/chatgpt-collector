@@ -12,6 +12,7 @@ import re
 import ssl
 import string
 import time
+import traceback
 import typing
 import urllib
 import urllib.parse
@@ -104,6 +105,7 @@ def http_get(
         return content if status_code == expeced else ""
     except Exception:
         time.sleep(interval)
+
         return http_get(
             url=url,
             headers=headers,
@@ -111,6 +113,7 @@ def http_get(
             retry=retry - 1,
             proxy=proxy,
             interval=interval,
+            expeced=expeced,
         )
 
 
@@ -313,6 +316,8 @@ def multi_thread_run(
     if num_threads is None or num_threads <= 0:
         num_threads = min(len(tasks), (os.cpu_count() or 1) * 2)
 
+    funcname = getattr(func, "__name__", repr(func))
+
     results, starttime = [None] * len(tasks), time.time()
     with futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         if isinstance(tasks[0], (list, tuple)):
@@ -332,10 +337,11 @@ def multi_thread_run(
                 result = future.result()
                 index = collections[future]
                 results[index] = result
-            except Exception as e:
-                logger.error(f"function execution generated an exception: {e}")
+            except:
+                logger.error(
+                    f"function {funcname} execution generated an exception, message:\n{traceback.format_exc()}"
+                )
 
-    funcname = getattr(func, "__name__", repr(func))
     logger.info(
         f"[Concurrent] multi-threaded execute [{funcname}] finished, count: {len(tasks)}, cost: {time.time()-starttime:.2f}s"
     )
