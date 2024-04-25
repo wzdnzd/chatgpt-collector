@@ -157,7 +157,7 @@ def checkin_one(
                 response = e
                 break
         except:
-            logger.error(f"[ONEAPI] occur error when execute checkin, url: {url}, message:\n {traceback.format_exc()}")
+            logger.error(f"[ONEAPI] occur error when execute checkin, site: {base}")
 
     success, message = False, "unknown error"
     if response:
