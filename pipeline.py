@@ -11,6 +11,7 @@ import re
 import time
 import warnings
 from datetime import datetime, timedelta, timezone
+from functools import cache
 from urllib import parse as parse
 
 import interactive
@@ -45,8 +46,10 @@ GITHUB_TOKEN = utils.trim(os.environ.get("GITHUB_TOKEN", ""))
 if GITHUB_TOKEN:
     DEFAULT_HEADERS["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
-# running on local
-LOCAL_MODE = utils.trim(os.environ.get("LOCAL_MODE", "")).lower() in ["true", "1"]
+
+@cache
+def is_local() -> bool:
+    return utils.trim(os.environ.get("LOCAL_MODE", "")).lower() in ["true", "1"]
 
 
 def last_history(url: str, refresh: bool) -> datetime:
@@ -196,7 +199,7 @@ def parse_site(
 
     targets = [] if not domains else list(domains)
 
-    if LOCAL_MODE and targets:
+    if is_local() and targets:
         utils.write_file(filename=filename, lines=targets, overwrite=False)
 
     return targets
@@ -385,7 +388,7 @@ def auth(url: str, filename: str) -> str:
         data = json.loads(content)
         target = "" if data.get("needCode", False) else url
 
-        if LOCAL_MODE and target:
+        if is_local() and target:
             utils.write_file(filename=filename, lines=target, overwrite=False)
 
         return target
@@ -470,7 +473,7 @@ def collect(params: dict) -> list:
 
     server = os.environ.get("COLLECT_CONF", "").strip()
     pushtool = push.get_instance(domain=server)
-    if not LOCAL_MODE and not pushtool.validate(storage.get("modified", {})):
+    if not is_local() and not pushtool.validate(storage.get("modified", {})):
         logger.error(f"[NextWeb] invalid persist config, must config modified store if running on remote")
         return []
 
@@ -516,7 +519,7 @@ def collect(params: dict) -> list:
     # result filepath
     sites_file = generate_path(repository=repository, filename="sites.txt")
 
-    mode, starttime = "LOCAL" if LOCAL_MODE else "REMOTE", time.time()
+    mode, starttime = "LOCAL" if is_local() else "REMOTE", time.time()
     logger.info(
         f"[NextWeb] start to collect sites from {username}/{repository}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
     )
@@ -546,7 +549,7 @@ def collect(params: dict) -> list:
 
         if deployments:
             # save deployments to file
-            if LOCAL_MODE:
+            if is_local():
                 # backup exist files
                 for file in [deployments_file, material_file, candidates_file]:
                     backup_file(filepath=file)
@@ -597,7 +600,7 @@ def collect(params: dict) -> list:
     chunk = max(params.get("chunk", 256), 1)
     model = params.get("model", "") or "gpt-3.5-turbo"
     standard = params.get("standard", False)
-    filename = sites_file if LOCAL_MODE else ""
+    filename = sites_file if is_local() else ""
 
     logger.info(f"[NextWeb] start to check available, sites: {len(candidates)}, model: {model}")
 
