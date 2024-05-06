@@ -676,7 +676,7 @@ def verify(
         text = message or content
         model = name or model
 
-    available = re.search(keyword, text, flags=re.I) is not None
+    available = re.search(keyword, text, flags=re.I) is not None and re.search(r'"error":', text, flags=re.I) is None
     model = "" if not available else model
     version = get_version(model=model)
 
