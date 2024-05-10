@@ -68,11 +68,12 @@ def checkin(params: dict) -> list[str]:
         sitekey = utils.trim(option.get("sitekey", ""))
         sitelink = utils.trim(option.get("sitelink", ""))
         regex = utils.trim(option.get("done", ""))
+        account_required = option.get("account", False)
 
         for item in tokens:
             token = utils.trim(item)
             if token:
-                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex))
+                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, account_required))
             else:
                 logger.error(f"[ONEAPI] ignore invalid token: {item}, url: {url}")
 
@@ -105,6 +106,7 @@ def checkin_one(
     sitekey: str = "",
     sitelink: str = "",
     done_regex: str = "",
+    account_required: bool = False,
 ) -> CheckInResult:
     if not base or not token:
         logger.error(f"[ONEAPI] skip execute checkin because invalid url or token, url: {base}, token: {token}")
@@ -114,7 +116,7 @@ def checkin_one(
     url = urljoin(base, path) if path else base
 
     # to minimize potential nopecha calls, check ahead to see if you've already checked in
-    done_regex = utils.trim(done_regex) or "已经签到"
+    done_regex = utils.trim(done_regex) or "已经?签到"
     content = utils.http_get(url=url, headers=headers, expeced=202)
     try:
         if content and re.search(done_regex, content, flags=re.M) is not None:
@@ -145,12 +147,21 @@ def checkin_one(
     if turnstile:
         url = f"{url}?turnstile={turnstile}"
 
+    payload = None
+    if account_required:
+        account = account_info(base=base, headers=headers)
+        if not account:
+            logger.error(f"[ONEAPI] cannot signin because fetch account failed")
+            return CheckInResult(url=base, success=False, token=token)
+
+        payload = json.dumps(account).encode(encoding="UTF8")
+
     # checkin
     response, retry = None, max(1, retry)
     while not response and retry > 0:
         retry -= 1
         try:
-            req = request.Request(url=url, headers=headers, method="POST")
+            req = request.Request(url=url, data=payload, headers=headers, method="POST")
             response = request.urlopen(req, timeout=10, context=utils.CTX)
         except HTTPError as e:
             if e.code in [400, 401, 404]:
@@ -173,21 +184,18 @@ def checkin_one(
             if content:
                 message = content
 
-    # query quota
     alive, quota, usage, flag = True, -1, -1, False
-    url = urljoin(base, "/api/user/self")
-    content = utils.http_get(url=url, headers=headers)
-    if content:
+
+    # query quota
+    data = account_info(base=base, headers=headers)
+    if data and isinstance(data, dict):
+        flag = True
+
         try:
-            result = json.loads(content)
-            if not result.get("success", False):
-                logger.error(f"[ONEAPI] cannot get quota, message: {result.get('message', '')}")
-            else:
-                flag, data = True, result.get("data", {})
-                unit = 1 if unit <= 0 else unit
-                alive = data.get("status", 0) == 1
-                quota = round(data.get("quota", 0) / unit, 2)
-                usage = round(data.get("used_quota", 0) / unit, 2)
+            unit = 1 if unit <= 0 else unit
+            alive = data.get("status", 0) == 1
+            quota = round(data.get("quota", 0) / unit, 2)
+            usage = round(data.get("used_quota", 0) / unit, 2)
         except:
             logger.error(f"[ONEAPI] cannot parse quota from response: {content}")
 
@@ -199,6 +207,30 @@ def checkin_one(
     )
 
     return CheckInResult(url=base, success=success, alive=alive, quota=quota, usage=usage, token=token)
+
+
+def account_info(base: str, headers: dict = None, token: str = "") -> dict:
+    token = utils.trim(token)
+
+    if not token and not headers:
+        return None
+    elif not headers:
+        headers = {"Authorization": f"Bearer {token}", "User-Agent": utils.USER_AGENT}
+
+    url = urljoin(utils.trim(base), "/api/user/self")
+    data, content = None, utils.http_get(url=url, headers=headers)
+
+    if content:
+        try:
+            result = json.loads(content)
+            if not result.get("success", False):
+                logger.error(f"[ONEAPI] cannot get account information, message: {result.get('message', '')}")
+            else:
+                data = result.get("data", {})
+        except:
+            logger.error(f"[ONEAPI] cannot parse account information from response: {content}")
+
+    return data
 
 
 def mask(text: str, n: int = 10) -> str:
