@@ -64,7 +64,7 @@ def last_history(url: str, refresh: bool) -> datetime:
                     date = datetime.strptime(modified, DATE_FORMAT)
                     last = (date + timedelta(minutes=-10)).replace(tzinfo=timezone.utc)
             except Exception:
-                logger.error(f"[NextWeb] invalid date format: {modified}")
+                logger.error(f"[Pipeline] invalid date format: {modified}")
 
     return last
 
@@ -84,20 +84,20 @@ def query_forks_count(username: str, repository: str, retry: int = 3) -> int:
     username = utils.trim(username)
     repository = utils.trim(repository)
     if not username or not repository:
-        logger.error(f"[NextWeb] invalid github username or repository")
+        logger.error(f"[Pipeline] invalid github username or repository")
         return -1
 
     url = f"{GITHUB_API}/repos/{username}/{repository}"
-    content = utils.http_get(url=url, headers=DEFAULT_HEADERS, retry=retry)
+    content = utils.http_get(url=url, headers=DEFAULT_HEADERS, retry=retry, interval=1)
     if not content:
-        logger.error(f"[NextWeb] failed to query forks count")
+        logger.error(f"[Pipeline] failed to query forks count")
         return -1
 
     try:
         data = json.loads(content)
         return data.get("forks_count", 0)
     except:
-        logger.error(f"[NextWeb] occur error when parse forks count, message: {content}")
+        logger.error(f"[Pipeline] occur error when parse forks count, message: {content}")
         return -1
 
 
@@ -105,12 +105,14 @@ def list_deployments(username: str, repository: str, history: datetime, sort: st
     username = utils.trim(username)
     repository = utils.trim(repository)
     if not username or not repository:
-        logger.error(f"[NextWeb] cannot list deployments from github due to username or repository is empty")
+        logger.error(f"[Pipeline] cannot list deployments from github due to username or repository is empty")
         return []
 
     last = history or datetime(year=1970, month=1, day=1, tzinfo=timezone.utc)
     count, peer = query_forks_count(username=username, repository=repository, retry=3), 100
     total = int(math.ceil(count / peer))
+
+    logger.info(f"[Pipeline] query forks finished, forks: {count}, page: {total}")
 
     # see: https://docs.github.com/en/rest/repos/forks?apiVersion=2022-11-28
     if sort not in ["newest", "oldest", "stargazers", "watchers"]:
@@ -195,7 +197,7 @@ def parse_site(
                 if site:
                     domains.add(site)
         except:
-            logger.error(f"[NextWeb] failed to parse target url due to cannot query deployments, message: {content}")
+            logger.error(f"[Pipeline] failed to parse target url due to cannot query deployments, message: {content}")
 
     targets = [] if not domains else list(domains)
 
@@ -282,7 +284,7 @@ def extract_target(url: str, session: str, exclude: str = "") -> list[str]:
             if re.search(exclude, domain, flags=re.I) is not None:
                 continue
         except:
-            logger.warning(f"[NextWeb] invalid exclude regex: {exclude}")
+            logger.warning(f"[Pipeline] invalid exclude regex: {exclude}")
 
         domains.append(real_deployment(url=domain))
 
@@ -311,7 +313,7 @@ def query_deployment_status(url: str, exclude: str = "") -> str:
                 if re.search(exclude, target, flags=re.I) is not None:
                     return ""
             except:
-                logger.warning(f"[NextWeb] invalid exclude regex: {exclude}")
+                logger.warning(f"[Pipeline] invalid exclude regex: {exclude}")
 
         success = state == "success"
         if not success:
@@ -364,12 +366,12 @@ def query_deployments_page(
 
             deployment = fork.get("deployments_url", "")
             if deployment:
-                deployments.append(deployment)
+                deployments.append(deployment.lower())
     except:
-        logger.error(f"[NextWeb] cannot fetch deployments for page: {page}, message: {content}")
+        logger.error(f"[Pipeline] cannot fetch deployments for page: {page}, message: {content}")
 
     cost = "{:.2f}s".format(time.time() - starttime)
-    logger.info(f"[NextWeb] finished query deployments for page: {page}, cost: {cost}")
+    logger.info(f"[Pipeline] finished query deployments for page: {page}, cost: {cost}")
 
     return deployments, over
 
@@ -474,7 +476,7 @@ def collect(params: dict) -> list:
     server = os.environ.get("COLLECT_CONF", "").strip()
     pushtool = push.get_instance(domain=server)
     if not is_local() and not pushtool.validate(storage.get("modified", {})):
-        logger.error(f"[NextWeb] invalid persist config, must config modified store if running on remote")
+        logger.error(f"[Pipeline] invalid persist config, must config modified store if running on remote")
         return []
 
     # store config
@@ -521,7 +523,7 @@ def collect(params: dict) -> list:
 
     mode, starttime = "LOCAL" if is_local() else "REMOTE", time.time()
     logger.info(
-        f"[NextWeb] start to collect sites from {username}/{repository}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
+        f"[Pipeline] start to collect sites from {username}/{repository}, mode: {mode}, checkonly: {checkonly}, refresh: {refresh}"
     )
 
     # load exists
@@ -545,7 +547,7 @@ def collect(params: dict) -> list:
 
         # deduplication
         deployments = list(set(deployments))
-        logger.info(f"[NextWeb] collect completed, found {len(deployments)} deployments")
+        logger.info(f"[Pipeline] collect completed, found {len(deployments)} deployments")
 
         if deployments:
             # save deployments to file
@@ -560,7 +562,7 @@ def collect(params: dict) -> list:
             exclude = utils.trim(params.get("exclude", ""))
 
             args = [[x, material_file, 1, 100, session, True, last, exclude] for x in deployments]
-            logger.info(f"[NextWeb] extract target domain begin, count: {len(args)}")
+            logger.info(f"[Pipeline] extract target domain begin, count: {len(args)}")
 
             materials = utils.multi_thread_run(
                 func=parse_site,
@@ -580,17 +582,17 @@ def collect(params: dict) -> list:
                         f.write(text)
                         f.flush()
                 except:
-                    logger.error(f"[NextWeb] failed to deduplication material file")
+                    logger.error(f"[Pipeline] failed to deduplication material file")
 
         # save last modified time
         if pushtool.validate(modified):
             content = json.dumps({LAST_MODIFIED: begin})
             pushtool.push_to(content=content, push_conf=modified, group="modified")
 
-    logger.info(f"[NextWeb] candidate target collection completed, found {len(candidates)} sites")
+    logger.info(f"[Pipeline] candidate target collection completed, found {len(candidates)} sites")
 
     if params.get("skip_check", False) or not candidates:
-        logger.warning("[NextWeb] availability testing steps will be skipped")
+        logger.warning("[Pipeline] availability testing steps will be skipped")
         return list(set(candidates))
 
     # backup sites.txt if file exists
@@ -602,7 +604,7 @@ def collect(params: dict) -> list:
     standard = params.get("standard", False)
     filename = sites_file if is_local() else ""
 
-    logger.info(f"[NextWeb] start to check available, sites: {len(candidates)}, model: {model}")
+    logger.info(f"[Pipeline] start to check available, sites: {len(candidates)}, model: {model}")
 
     # batch check
     sites = interactive.batch_probe(
@@ -620,8 +622,10 @@ def collect(params: dict) -> list:
     if sites and pushtool.validate(database):
         success = pushtool.push_to(content=",".join(sites), push_conf=database, group="sites")
         if not success:
-            logger.error(f"[NextWeb] push {len(sites)} sites to remote failed")
+            logger.error(f"[Pipeline] push {len(sites)} sites to remote failed")
 
     cost = "{:.2f}s".format(time.time() - starttime)
-    logger.info(f"[NextWeb] finished check {len(candidates)} candidates, got {len(sites)} avaiable sites, cost: {cost}")
+    logger.info(
+        f"[Pipeline] finished check {len(candidates)} candidates, got {len(sites)} avaiable sites, cost: {cost}"
+    )
     return sites
