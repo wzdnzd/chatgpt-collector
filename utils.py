@@ -58,7 +58,6 @@ def http_get(
     retry: int = 3,
     proxy: str = "",
     interval: float = 0,
-    expeced: int = 200,
 ) -> str:
     if not isurl(url=url):
         logger.error(f"invalid url: {url}")
@@ -74,8 +73,6 @@ def http_get(
         }
 
     interval = max(0, interval)
-    expeced = max(0, expeced)
-
     try:
         url = encoding_url(url=url)
         if params and isinstance(params, dict):
@@ -102,19 +99,11 @@ def http_get(
         except:
             content = gzip.decompress(content).decode("utf8")
 
-        return content if status_code == expeced else ""
+        return content if status_code < 300 else ""
     except Exception:
         time.sleep(interval)
 
-        return http_get(
-            url=url,
-            headers=headers,
-            params=params,
-            retry=retry - 1,
-            proxy=proxy,
-            interval=interval,
-            expeced=expeced,
-        )
+        return http_get(url=url, headers=headers, params=params, retry=retry - 1, proxy=proxy, interval=interval)
 
 
 def http_post(

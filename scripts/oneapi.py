@@ -54,8 +54,18 @@ def checkin(params: dict) -> list[str]:
             continue
 
         tokens = option.get("tokens", [])
-        if not tokens or type(tokens) != list:
-            logger.error(f"[ONEAPI] skip execute checkin url: {url} because cannot found any valid token")
+        if not isinstance(tokens, list):
+            tokens = []
+
+        cookies = option.get("cookies", [])
+        if not isinstance(cookies, list):
+            cookies = []
+
+        if not tokens and not cookies:
+            logger.error(f"[ONEAPI] skip execute checkin url: {url} because cannot found any valid token or cookie")
+            continue
+        elif tokens and cookies and len(tokens) != len(cookies):
+            logger.error(f"[ONEAPI] skip execute checkin url: {url} due to invalid config")
             continue
 
         path, unit = utils.trim(option.get("path", "")), 500000
@@ -70,12 +80,15 @@ def checkin(params: dict) -> list[str]:
         regex = utils.trim(option.get("done", ""))
         account_required = option.get("account", False)
 
-        for item in tokens:
-            token = utils.trim(item)
-            if token:
-                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, account_required))
+        lt, lc = len(tokens), len(cookies)
+        for i in range(max(lt, lc)):
+            token = utils.trim(tokens[i]) if i < lt else ""
+            cookie = utils.trim(cookies[i]) if i < lc else ""
+
+            if token or cookie:
+                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, cookie, account_required))
             else:
-                logger.error(f"[ONEAPI] ignore invalid token: {item}, url: {url}")
+                logger.error(f"[ONEAPI] ignore invalid token and cookie, url: {url}")
 
     if not tasks:
         logger.error(f"[ONEAPI] skip execute checkin because no valid task found")
@@ -106,18 +119,22 @@ def checkin_one(
     sitekey: str = "",
     sitelink: str = "",
     done_regex: str = "",
+    cookie: str = "",
     account_required: bool = False,
 ) -> CheckInResult:
-    if not base or not token:
-        logger.error(f"[ONEAPI] skip execute checkin because invalid url or token, url: {base}, token: {token}")
+    if not base or (not token and not cookie):
+        logger.error(f"[ONEAPI] skip execute checkin because invalid url or token and cookie, url: {base}")
         return CheckInResult(url=base, success=False, token=token)
 
-    headers = {"Authorization": f"Bearer {token}", "User-Agent": utils.USER_AGENT}
     url = urljoin(base, path) if path else base
+    headers = get_headers(token=token, cookie=cookie)
+    if not headers:
+        logger.error(f"[ONEAPI] please provide a token or cookie, url: {base}")
+        return CheckInResult(url=base, success=False, token=token)
 
     # to minimize potential nopecha calls, check ahead to see if you've already checked in
     done_regex = utils.trim(done_regex) or "已经?签到"
-    content = utils.http_get(url=url, headers=headers, expeced=202)
+    content = utils.http_get(url=url, headers=headers)
     try:
         if content and re.search(done_regex, content, flags=re.M) is not None:
             logger.info(f"[ONEAPI] task was ignored because it had already been checked in, url: {url}")
@@ -209,13 +226,11 @@ def checkin_one(
     return CheckInResult(url=base, success=success, alive=alive, quota=quota, usage=usage, token=token)
 
 
-def account_info(base: str, headers: dict = None, token: str = "") -> dict:
-    token = utils.trim(token)
-
-    if not token and not headers:
-        return None
-    elif not headers:
-        headers = {"Authorization": f"Bearer {token}", "User-Agent": utils.USER_AGENT}
+def account_info(base: str, headers: dict = None, token: str = "", cookie: str = "") -> dict:
+    if not headers or not isinstance(headers, dict):
+        headers = get_headers(token=token, cookie=cookie)
+        if not headers:
+            return None
 
     url = urljoin(utils.trim(base), "/api/user/self")
     data, content = None, utils.http_get(url=url, headers=headers)
@@ -231,6 +246,22 @@ def account_info(base: str, headers: dict = None, token: str = "") -> dict:
             logger.error(f"[ONEAPI] cannot parse account information from response: {content}")
 
     return data
+
+
+def get_headers(token: str, cookie: str) -> dict:
+    token = utils.trim(token)
+    cookie = utils.trim(cookie)
+
+    if not token and not cookie:
+        return None
+
+    headers = {"User-Agent": utils.USER_AGENT, "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if cookie:
+        headers["Cookie"] = cookie
+
+    return headers
 
 
 def mask(text: str, n: int = 10) -> str:
