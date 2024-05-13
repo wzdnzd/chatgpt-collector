@@ -232,8 +232,7 @@ if __name__ == "__main__":
         "-r",
         "--repository",
         type=str,
-        required=False,
-        default="ChatGPT-Next-Web",
+        required=True,
         help="github repository name",
     )
 
@@ -260,8 +259,7 @@ if __name__ == "__main__":
         "-u",
         "--username",
         type=str,
-        required=False,
-        default="ChatGPTNextWeb",
+        required=True,
         help="github username",
     )
 

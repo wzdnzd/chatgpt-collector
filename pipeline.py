@@ -28,12 +28,6 @@ LAST_MODIFIED = "lastModified"
 # github rest api prefix
 GITHUB_API = "https://api.github.com"
 
-# github username
-OWNER = "ChatGPTNextWeb"
-
-# github repository name
-REPO = "ChatGPT-Next-Web"
-
 # request headers
 DEFAULT_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -466,6 +460,37 @@ def backup_file(filepath: str) -> None:
     os.rename(filepath, newfile)
 
 
+def tidy(filepath: str, together: bool = True) -> None:
+    filepath = utils.trim(filepath)
+    if not filepath or not os.path.exists(filepath) or not os.path.isfile(filepath):
+        return
+
+    lines = None
+    try:
+        with open(filepath, "r", encoding="utf8") as f:
+            lines = list(set([x.replace("\n", "").strip().lower() for x in f.readlines() if x]))
+    except:
+        logger.error(f"[Pipeline] skip tidy due to read file {filepath} failed")
+        return
+
+    if not lines:
+        return
+
+    # put the same URL together
+    if together:
+        lines.sort(key=lambda x: x[::-1])
+
+    text = "\n".join(lines)
+
+    # write to file
+    try:
+        with open(filepath, "w+", encoding="utf8") as f:
+            f.write(text)
+            f.flush()
+    except:
+        logger.error(f"[Pipeline] skip tidy due to write file {filepath} failed")
+
+
 def collect(params: dict) -> list:
     if not params or type(params) != dict:
         return []
@@ -504,10 +529,14 @@ def collect(params: dict) -> list:
     run_async = params.get("async", True)
 
     # github username
-    username = utils.trim(params.get("username", "")) or OWNER
+    username = utils.trim(params.get("username", ""))
 
     # github repository
-    repository = utils.trim(params.get("repository", "")) or REPO
+    repository = utils.trim(params.get("repository", ""))
+
+    if not username or not repository:
+        logger.error(f"[Pipeline] github username or repository cannot be blank")
+        return []
 
     # deployments filepath
     deployments_file = generate_path(repository=repository, filename="deployments.txt")
@@ -574,15 +603,7 @@ def collect(params: dict) -> list:
             candidates.extend([x for x in newsites if x])
 
             # deduplication
-            if os.path.exists(material_file) and os.path.isfile(material_file):
-                try:
-                    with open(material_file, "w+", encoding="utf8") as f:
-                        lines = list(set([x.replace("\n", "").strip().lower() for x in f.readlines() if x]))
-                        text = "\n".join(lines)
-                        f.write(text)
-                        f.flush()
-                except:
-                    logger.error(f"[Pipeline] failed to deduplication material file")
+            tidy(filepath=material_file, together=True)
 
         # save last modified time
         if pushtool.validate(modified):
@@ -617,6 +638,9 @@ def collect(params: dict) -> list:
         num_threads=num_threads,
         chunk=chunk,
     )
+
+    # deduplication and sort
+    tidy(filepath=filename, together=True)
 
     # save sites
     if sites and pushtool.validate(database):
