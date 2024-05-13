@@ -352,7 +352,7 @@ def query_deployments_page(
             if not fork or type(fork) != dict:
                 continue
 
-            datetext = fork.get("created_at", "")
+            datetext = fork.get("updated_at", "")
             updated = datetime.strptime(datetext, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
             # last time has already been collected
@@ -360,10 +360,13 @@ def query_deployments_page(
                 over = True
                 break
 
-            deployment = fork.get("deployments_url", "")
-            homepage = fork.get("homepage", "")
-            if deployment:
-                deployments.append((deployment.lower(), homepage.lower()))
+            deployment = utils.trim(fork.get("deployments_url", "")).lower()
+            homepage = utils.trim(fork.get("homepage", "")).lower()
+            if homepage.startswith("https://github.com/"):
+                homepage = ""
+
+            if deployment or homepage:
+                deployments.append((deployment, homepage))
     except:
         logger.error(f"[Pipeline] cannot fetch deployments for page: {page}, message: {content}")
 

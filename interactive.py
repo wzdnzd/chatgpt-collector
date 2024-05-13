@@ -71,7 +71,7 @@ class RequestParams(object):
     model: str = "gpt-3.5-turbo"
 
 
-def get_headers(domain: str) -> dict:
+def get_headers(domain: str, token: str = "") -> dict:
     def create_jwt(access_code: str = "") -> str:
         """see: https://github.com/lobehub/lobe-chat/blob/main/src/utils/jwt.ts"""
         now = int(time.time())
@@ -97,9 +97,12 @@ def get_headers(domain: str) -> dict:
         "User-Agent": utils.USER_AGENT,
     }
 
-    # lobe-chat
+    token = utils.trim(token)
     if domain.endswith("/api/chat/openai"):
-        headers["X-Lobe-Chat-Auth"] = create_jwt()
+        # lobe-chat
+        headers["X-Lobe-Chat-Auth"] = create_jwt(access_code=token)
+    elif token:
+        headers["Authorization"] = f"Bearer {token}"
 
     return headers
 
@@ -217,11 +220,7 @@ def chat(
     if not url:
         return CheckResult(available=False, terminate=True)
 
-    headers = get_headers(domain=url)
-    token = utils.trim(token)
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
+    headers = get_headers(domain=url, token=token)
     model = utils.trim(model) or "gpt-3.5-turbo"
     retry = 3 if retry < 0 else retry
     timeout = 15 if timeout <= 0 else timeout
@@ -290,11 +289,7 @@ async def chat_async(
     if retry <= 0:
         return CheckResult(available=False)
 
-    headers = get_headers(domain=url)
-    token = token.strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
+    headers = get_headers(domain=url, token=token)
     model = model.strip() or "gpt-3.5-turbo"
     payload = get_payload(model=model, stream=stream)
     timeout = 6 if timeout <= 0 else timeout
