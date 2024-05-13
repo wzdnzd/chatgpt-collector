@@ -243,6 +243,8 @@ def process(args: argparse.Namespace) -> None:
                 show=args.show,
                 strict=strict,
                 threshold=tasks.get("threshold"),
+                wander=tasks.get("wander", True),
+                potentials=tasks.get("potentials", ""),
             )
 
             if not data:
@@ -343,9 +345,14 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             page_tasks[k] = v.get("params", {})
 
     threshold = max(int(data.get("threshold", 72)), 1)
+    wander = str(data.get("wander", True)).lower() in ["true", "1"]
+    potentials = utils.trim(data.get("potentials", "")).lower()
+
     data.update(
         {
             "threshold": threshold,
+            "potentials": potentials,
+            "wander": wander,
             "scripts": script_tasks,
             "pages": page_tasks,
             "persists": groups,
@@ -456,7 +463,8 @@ def detect(urls: list[str], candidates: dict, blacklist: dict = {}, **kwargs) ->
         candidates=sites,
         model=kwargs.get("model", ""),
         filename=kwargs.get("filename", ""),
-        standard=False,
+        potentials=kwargs.get("potentials", ""),
+        wander=kwargs.get("wander", True),
         run_async=kwargs.get("run_async", True),
         show_progress=kwargs.get("show", False),
         num_threads=kwargs.get("num_threads", 0),

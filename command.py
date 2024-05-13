@@ -37,7 +37,8 @@ def main(args: argparse.Namespace) -> None:
         "async": args.run_async,
         "username": username,
         "repository": repository,
-        "standard": args.typical,
+        "wander": args.wander,
+        "potentials": utils.trim(args.latent).lower(),
         "exclude": utils.trim(args.exclude),
     }
 
@@ -193,6 +194,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-l",
+        "--latent",
+        type=str,
+        required=False,
+        default="",
+        help="potential APIs to be tested, multiple APIs separated by commas",
+    )
+
+    parser.add_argument(
         "-m",
         "--model",
         type=str,
@@ -247,20 +257,20 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-t",
-        "--typical",
-        dest="typical",
-        action="store_true",
-        default=False,
-        help="is a standard OpenAI API subpath",
-    )
-
-    parser.add_argument(
         "-u",
         "--username",
         type=str,
         required=True,
         help="github username",
+    )
+
+    parser.add_argument(
+        "-w",
+        "--wander",
+        dest="wander",
+        action="store_true",
+        default=False,
+        help="whether to use common APIs for probing",
     )
 
     main(parser.parse_args())

@@ -64,6 +64,7 @@ def main(args: argparse.Namespace) -> None:
     if args.overwrite and os.path.exists(dest) and os.path.isfile(dest):
         os.remove(dest)
 
+    potentials = utils.trim(args.latent).lower()
     num_processes, num_threads = args.process, args.thread
 
     try:
@@ -74,7 +75,8 @@ def main(args: argparse.Namespace) -> None:
                     interactive.check_async(
                         sites=sites,
                         filename=dest,
-                        standard=args.standard,
+                        potentials=potentials,
+                        wander=args.wander,
                         model=model,
                         concurrency=num_threads,
                         show_progress=args.display,
@@ -95,7 +97,8 @@ def main(args: argparse.Namespace) -> None:
                     interactive.check_concurrent(
                         sites=task,
                         filename=dest,
-                        standard=args.standard,
+                        potentials=potentials,
+                        wander=args.wander,
                         model=model,
                         num_threads=num_threads,
                         show_progress=show,
@@ -103,7 +106,8 @@ def main(args: argparse.Namespace) -> None:
                     )
             else:
                 tasks = [
-                    [x, dest, args.standard, model, num_threads, args.display, i + 1] for i, x in enumerate(chunks)
+                    [x, dest, potentials, args.wander, model, num_threads, args.display, i + 1]
+                    for i, x in enumerate(chunks)
                 ]
                 utils.multi_process_run(func=interactive.check_concurrent, tasks=tasks)
 
@@ -155,6 +159,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-l",
+        "--latent",
+        type=str,
+        required=False,
+        default="",
+        help="potential APIs to be tested, multiple APIs separated by commas",
+    )
+
+    parser.add_argument(
         "-m",
         "--model",
         type=str,
@@ -191,21 +204,21 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-s",
-        "--standard",
-        dest="standard",
-        action="store_true",
-        default=False,
-        help="is a standard OpenAI API subpath",
-    )
-
-    parser.add_argument(
         "-t",
         "--thread",
         type=int,
         required=False,
         default=0,
         help="number of concurrent threads, defaults to double the number of CPU cores",
+    )
+
+    parser.add_argument(
+        "-w",
+        "--wander",
+        dest="wander",
+        action="store_true",
+        default=False,
+        help="whether to use common APIs for probing",
     )
 
     main(parser.parse_args())

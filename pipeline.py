@@ -95,7 +95,7 @@ def query_forks_count(username: str, repository: str, retry: int = 3) -> int:
         return -1
 
 
-def list_deployments(username: str, repository: str, history: datetime, sort: str = "newest") -> list[str]:
+def list_deployments(username: str, repository: str, history: datetime, sort: str = "newest") -> list[tuple[str, str]]:
     username = utils.trim(username)
     repository = utils.trim(repository)
     if not username or not repository:
@@ -145,6 +145,7 @@ def parse_site(
     rest: bool = True,
     last: datetime = None,
     exclude: str = "",
+    homepage: bool = False,
 ) -> list[str]:
     if not rest and session:
         return extract_target(url=url, session=session, exclude=exclude)
@@ -160,9 +161,10 @@ def parse_site(
     peer, domains = min(max(1, peer), 100), set()
 
     # fetch homepage
-    homepage = extract_homepage(url=url)
     if homepage:
-        domains.add(homepage)
+        website = extract_homepage(url=url)
+        if website:
+            domains.add(website)
 
     if not last:
         last = datetime(year=1970, month=1, day=1, tzinfo=timezone.utc)
@@ -326,7 +328,7 @@ def query_deployments_page(
     last: datetime,
     peer: int = 100,
     sort: str = "newest",
-) -> tuple[list[str], bool]:
+) -> tuple[list[tuple[str, str]], bool]:
     username = utils.trim(username)
     repository = utils.trim(repository)
 
@@ -359,8 +361,9 @@ def query_deployments_page(
                 break
 
             deployment = fork.get("deployments_url", "")
+            homepage = fork.get("homepage", "")
             if deployment:
-                deployments.append(deployment.lower())
+                deployments.append((deployment.lower(), homepage.lower()))
     except:
         logger.error(f"[Pipeline] cannot fetch deployments for page: {page}, message: {content}")
 
@@ -565,10 +568,16 @@ def collect(params: dict) -> list:
         last = last_history(pushtool.raw_url(push_conf=modified), refresh)
 
         # source repository deployments
-        deployments = [f"https://api.github.com/repos/{username}/{repository}/deployments"]
+        domains, deployments = set(), [f"https://api.github.com/repos/{username}/{repository}/deployments"]
 
         # TODO: if it is possible to bypass the rate limiting measures of GitHub, asynchronous requests can be used
-        deployments.extend(list_deployments(username, repository, last, sort))
+        websites = list_deployments(username, repository, last, sort)
+        if websites:
+            for deployment, homepage in websites:
+                if deployment:
+                    deployments.append(deployment)
+                if homepage:
+                    domains.add(homepage)
 
         # add local existing deployments if necessary
         if overlay:
@@ -578,32 +587,39 @@ def collect(params: dict) -> list:
         deployments = list(set(deployments))
         logger.info(f"[Pipeline] collect completed, found {len(deployments)} deployments")
 
-        if deployments:
+        if deployments or domains:
+            homepages = list(domains) if domains else []
+            candidates.extend(homepages)
+
             # save deployments to file
             if is_local():
                 # backup exist files
                 for file in [deployments_file, material_file, candidates_file]:
                     backup_file(filepath=file)
 
-                utils.write_file(deployments_file, deployments, True)
+                if deployments:
+                    utils.write_file(deployments_file, deployments, True)
+                if homepages:
+                    utils.write_file(material_file, homepages, True)
 
-            # regex for dropped domains
-            exclude = utils.trim(params.get("exclude", ""))
+            if deployments:
+                # regex for dropped domains
+                exclude = utils.trim(params.get("exclude", ""))
 
-            args = [[x, material_file, 1, 100, session, True, last, exclude] for x in deployments]
-            logger.info(f"[Pipeline] extract target domain begin, count: {len(args)}")
+                args = [[x, material_file, 1, 100, session, True, last, exclude, False] for x in deployments]
+                logger.info(f"[Pipeline] extract target domain begin, count: {len(args)}")
 
-            materials = utils.multi_thread_run(
-                func=parse_site,
-                tasks=args,
-                show_progress=True,
-                num_threads=num_threads,
-            )
-            newsites = list(itertools.chain.from_iterable(materials))
-            candidates.extend([x for x in newsites if x])
+                materials = utils.multi_thread_run(
+                    func=parse_site,
+                    tasks=args,
+                    show_progress=True,
+                    num_threads=num_threads,
+                )
+                newsites = [] if not materials else list(itertools.chain.from_iterable(materials))
+                candidates.extend([x for x in newsites if x])
 
-            # deduplication
-            tidy(filepath=material_file, together=True)
+                # deduplication
+                tidy(filepath=material_file, together=True)
 
         # save last modified time
         if pushtool.validate(modified):
@@ -622,7 +638,8 @@ def collect(params: dict) -> list:
     candidates = list(set(candidates))
     chunk = max(params.get("chunk", 256), 1)
     model = params.get("model", "") or "gpt-3.5-turbo"
-    standard = params.get("standard", False)
+    potentials = params.get("potentials", "")
+    wander = params.get("wander", False)
     filename = sites_file if is_local() else ""
 
     logger.info(f"[Pipeline] start to check available, sites: {len(candidates)}, model: {model}")
@@ -632,7 +649,8 @@ def collect(params: dict) -> list:
         candidates=candidates,
         model=model,
         filename=filename,
-        standard=standard,
+        potentials=potentials,
+        wander=wander,
         run_async=run_async,
         show_progress=True,
         num_threads=num_threads,

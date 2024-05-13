@@ -4,6 +4,7 @@
 # @Time    : 2024-04-07
 
 import asyncio
+import base64
 import gzip
 import json
 import os
@@ -21,7 +22,20 @@ from tqdm import tqdm
 import utils
 from logger import logger
 
+# 检测关键词
 KEYWORD = "ChatGPT is"
+
+# 默认接口
+DEFAULT_API = "/v1/chat/completions"
+
+# 常见接口集合
+COMMON_APIS = [
+    "/v1/chat/completions",
+    "/api/openai/v1/chat/completions",
+    "/api/chat-stream",
+    "/api/chat/openai",
+    "/api/chat-process",
+]
 
 
 @dataclass
@@ -58,7 +72,21 @@ class RequestParams(object):
 
 
 def get_headers(domain: str) -> dict:
-    return {
+    def create_jwt(access_code: str = "") -> str:
+        """see: https://github.com/lobehub/lobe-chat/blob/main/src/utils/jwt.ts"""
+        now = int(time.time())
+        payload = {
+            "accessCode": utils.trim(access_code),
+            "apiKey": "",
+            "endpoint": "",
+            "iat": now,
+            "exp": now + 100,
+        }
+
+        text = base64.b64encode(json.dumps(payload).encode()).decode()
+        return f"http_nosafe.{text}"
+
+    headers = {
         "Content-Type": "application/json",
         "Path": "v1/chat/completions",
         "Accept-Language": "zh-CN,zh;q=0.9",
@@ -68,6 +96,12 @@ def get_headers(domain: str) -> dict:
         "Origin": domain,
         "User-Agent": utils.USER_AGENT,
     }
+
+    # lobe-chat
+    if domain.endswith("/api/chat/openai"):
+        headers["X-Lobe-Chat-Auth"] = create_jwt()
+
+    return headers
 
 
 def get_payload(model: str, stream: bool = True) -> dict:
@@ -125,7 +159,25 @@ def parse_url(url: str) -> RequestParams:
     return RequestParams(stream=stream, version=version, token=token, model=model)
 
 
-def get_urls(domain: str, standard: bool = False) -> list[str]:
+def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[str]:
+    """
+    Generate candidate APIs
+
+    Parameters
+    ----------
+    domain : str
+        The target site domain
+    potentials : str
+        The potential APIs to be tested, multiple APIs separated by commas
+    wander : bool
+         Whether to use common APIs for testing
+
+    Returns
+    -------
+    list[str]
+        Targets to be checked
+
+    """
     domain = utils.trim(domain)
     if not domain:
         return []
@@ -135,15 +187,12 @@ def get_urls(domain: str, standard: bool = False) -> list[str]:
         urls = list()
 
         if not result.path or result.path == "/":
-            subpaths = (
-                ["/v1/chat/completions"]
-                if standard
-                else [
-                    "/v1/chat/completions",
-                    "/api/chat-stream",
-                    "/api/openai/v1/chat/completions",
-                ]
-            )
+            subpaths = list(set([x.strip().lower() for x in utils.trim(potentials).split(",") if x]))
+            if not subpaths:
+                if wander:
+                    subpaths = COMMON_APIS
+                else:
+                    subpaths = [DEFAULT_API or "/v1/chat/completions"]
 
             for subpath in subpaths:
                 url = parse.urljoin(domain, subpath)
@@ -286,9 +335,14 @@ async def chat_async(
 
 
 def check(
-    domain: str, filename: str = "", standard: bool = False, model: str = "gpt-3.5-turbo", detect: bool = True
+    domain: str,
+    filename: str = "",
+    potentials: str = "",
+    wander: bool = False,
+    model: str = "gpt-3.5-turbo",
+    detect: bool = True,
 ) -> str:
-    target, urls = "", get_urls(domain=domain, standard=standard)
+    target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
     stream, version = False, 0
 
     params = parse_url(url=domain)
@@ -337,7 +391,8 @@ def check(
 def check_concurrent(
     sites: list[str],
     filename: str = "",
-    standard: bool = False,
+    potentials: str = "",
+    wander: bool = False,
     model: str = "gpt-3.5-turbo",
     num_threads: int = -1,
     show_progress: bool = False,
@@ -350,7 +405,7 @@ def check_concurrent(
     filename = utils.trim(filename)
     model = utils.trim(model) or "gpt-3.5-turbo"
     index = max(0, index)
-    tasks = [[x, filename, standard, model, True] for x in sites if x]
+    tasks = [[x, filename, potentials, wander, model, True] for x in sites if x]
 
     result = utils.multi_thread_run(
         func=check,
@@ -366,7 +421,8 @@ def check_concurrent(
 async def check_async(
     sites: list[str],
     filename: str = "",
-    standard: bool = False,
+    potentials: str = "",
+    wander: bool = False,
     model: str = "gpt-3.5-turbo",
     concurrency: int = 512,
     show_progress: bool = True,
@@ -379,7 +435,7 @@ async def check_async(
         detect: bool = True,
     ) -> str:
         async with semaphore:
-            target, urls = "", get_urls(domain=domain, standard=standard)
+            target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
             stream, version = False, 0
 
             params = parse_url(url=domain)
@@ -490,7 +546,8 @@ def batch_probe(
     candidates: list[str],
     model: str = "gpt-3.5-turbo",
     filename: str = "",
-    standard: bool = False,
+    potentials: str = "",
+    wander: bool = False,
     run_async: bool = True,
     show_progress: bool = False,
     num_threads: int = 0,
@@ -505,7 +562,8 @@ def batch_probe(
             check_async(
                 sites=candidates,
                 filename=filename,
-                standard=standard,
+                potentials=potentials,
+                wander=wander,
                 model=model,
                 concurrency=num_threads,
                 show_progress=show_progress,
@@ -516,7 +574,8 @@ def batch_probe(
         sites = check_concurrent(
             sites=candidates,
             filename=filename,
-            standard=standard,
+            potentials=potentials,
+            wander=wander,
             model=model,
             num_threads=num_threads,
             show_progress=show_progress,
@@ -524,7 +583,7 @@ def batch_probe(
     # sharding
     else:
         slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
-        tasks = [[x, filename, standard, model, num_threads, False, show_progress] for x in slices]
+        tasks = [[x, filename, potentials, wander, model, num_threads, show_progress] for x in slices]
         results = utils.multi_process_run(func=check_concurrent, tasks=tasks)
         sites = [x for r in results if r for x in r]
 
