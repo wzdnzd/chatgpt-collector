@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 import utils
 from logger import logger
+from urlvalidator import isurl
 
 # 检测关键词
 KEYWORD = "ChatGPT is"
@@ -217,7 +218,7 @@ def chat(
     retry: int = 3,
     timeout: int = 6,
 ) -> CheckResult:
-    if not url:
+    if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
 
     headers = get_headers(domain=url, token=token)
@@ -284,7 +285,7 @@ async def chat_async(
     timeout: int = 6,
     interval: float = 3,
 ) -> CheckResult:
-    if not url:
+    if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
     if retry <= 0:
         return CheckResult(available=False)

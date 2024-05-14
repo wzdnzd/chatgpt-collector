@@ -18,6 +18,7 @@ import interactive
 import push
 import utils
 from logger import logger
+from urlvalidator import isurl
 
 # date format
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -218,6 +219,9 @@ def real_deployment(url: str) -> str:
         return text[:start], text[end:], word
 
     url = utils.trim(url)
+    if not isurl(url):
+        return ""
+
     if not url.endswith(".vercel.app"):
         return url
 
@@ -247,7 +251,7 @@ def extract_homepage(url: str) -> str:
             return ""
 
         homepage = data.get("homepage", "")
-        if homepage and homepage.startswith("https://github.com/"):
+        if homepage and (not isurl(homepage) or homepage.startswith("https://github.com/")):
             homepage = ""
 
         return homepage
@@ -362,7 +366,7 @@ def query_deployments_page(
 
             deployment = utils.trim(fork.get("deployments_url", "")).lower()
             homepage = utils.trim(fork.get("homepage", "")).lower()
-            if homepage.startswith("https://github.com/"):
+            if not isurl(homepage) or homepage.startswith("https://github.com/"):
                 homepage = ""
 
             if deployment or homepage:
