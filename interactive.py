@@ -35,7 +35,6 @@ COMMON_APIS = [
     "/api/openai/v1/chat/completions",
     "/api/chat-stream",
     "/api/chat/openai",
-    "/api/chat-process",
 ]
 
 
@@ -72,7 +71,7 @@ class RequestParams(object):
     model: str = "gpt-3.5-turbo"
 
 
-def get_headers(domain: str, token: str = "") -> dict:
+def get_headers(domain: str, token: str = "", customize_headers: dict = None) -> dict:
     def create_jwt(access_code: str = "") -> str:
         """see: https://github.com/lobehub/lobe-chat/blob/main/src/utils/jwt.ts"""
         now = int(time.time())
@@ -105,11 +104,15 @@ def get_headers(domain: str, token: str = "") -> dict:
     elif token:
         headers["Authorization"] = f"Bearer {token}"
 
+    if isinstance(customize_headers, dict):
+        headers.update(customize_headers)
+
     return headers
 
 
-def get_payload(model: str, stream: bool = True) -> dict:
-    return {
+def get_payload(model: str, stream: bool = True, style: int = 0) -> dict:
+    question = f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with '{KEYWORD}'!"
+    payload = {
         "model": model or "gpt-3.5-turbo",
         "temperature": 0,
         "max_tokens": 1000,
@@ -117,13 +120,16 @@ def get_payload(model: str, stream: bool = True) -> dict:
         "frequency_penalty": 1,
         "presence_penalty": 1,
         "stream": stream,
-        "messages": [
-            {
-                "role": "user",
-                "content": f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with '{KEYWORD}'!",
-            }
-        ],
     }
+
+    if style == 1:
+        # microsoft azure style
+        payload["prompt"] = question
+        payload["options"] = {}
+    else:
+        payload["messages"] = [{"role": "user", "content": question}]
+
+    return payload
 
 
 def get_model(version: int) -> str:
@@ -210,6 +216,30 @@ def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[st
         return []
 
 
+def parse_headers(content: str, delimiter: str = "|") -> dict:
+    if not isinstance(delimiter, str) or delimiter == "":
+        logger.error("[Interactive] cannot parse headers due to invalid delimiter")
+        return None
+
+    content = utils.trim(content)
+    groups = content.split(delimiter)
+    headers = dict()
+
+    for group in groups:
+        text = utils.trim(group)
+        words = text.split(":", maxsplit=1)
+        if not words or len(words) != 2:
+            continue
+
+        k = utils.trim(words[0])
+        v = utils.trim(words[1])
+
+        if k and v:
+            headers[k] = v
+
+    return None if not headers else headers
+
+
 def chat(
     url: str,
     model: str = "gpt-3.5-turbo",
@@ -217,23 +247,33 @@ def chat(
     token: str = "",
     retry: int = 3,
     timeout: int = 6,
+    style: int = 0,
+    headers: dict = None,
 ) -> CheckResult:
     if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
 
-    headers = get_headers(domain=url, token=token)
+    customize_headers = get_headers(domain=url, token=token, customize_headers=headers)
     model = utils.trim(model) or "gpt-3.5-turbo"
     retry = 3 if retry < 0 else retry
     timeout = 15 if timeout <= 0 else timeout
 
-    payload = get_payload(model=model, stream=stream)
+    payload = get_payload(model=model, stream=stream, style=style)
     data = json.dumps(payload).encode(encoding="UTF8")
 
     response, count = None, 0
     while not response and count < retry:
         try:
             opener = request.build_opener(utils.NoRedirect)
-            response = opener.open(request.Request(url=url, data=data, headers=headers, method="POST"), timeout=timeout)
+            response = opener.open(
+                request.Request(
+                    url=url,
+                    data=data,
+                    headers=customize_headers,
+                    method="POST",
+                ),
+                timeout=timeout,
+            )
         except error.HTTPError as e:
             if e.code in [400, 401]:
                 return CheckResult(available=False, terminate=True)
@@ -284,21 +324,23 @@ async def chat_async(
     retry: int = 3,
     timeout: int = 6,
     interval: float = 3,
+    style: int = 0,
+    headers: dict = None,
 ) -> CheckResult:
     if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
     if retry <= 0:
         return CheckResult(available=False)
 
-    headers = get_headers(domain=url, token=token)
     model = model.strip() or "gpt-3.5-turbo"
-    payload = get_payload(model=model, stream=stream)
+    customize_headers = get_headers(domain=url, token=token, customize_headers=headers)
+    payload = get_payload(model=model, stream=stream, style=style)
     timeout = 6 if timeout <= 0 else timeout
     interval = max(0, interval)
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
+            async with session.post(url, json=payload, headers=customize_headers, timeout=timeout) as response:
                 if response.status != 200:
                     terminal = response.status in [400, 401]
                     try:
@@ -314,7 +356,17 @@ async def chat_async(
                     content = await response.text()
                 except asyncio.TimeoutError:
                     await asyncio.sleep(interval)
-                    return await chat_async(url, model, stream, token, retry - 1, min(timeout + 10, 90), interval)
+                    return await chat_async(
+                        url=url,
+                        model=model,
+                        stream=stream,
+                        token=token,
+                        retry=retry - 1,
+                        timeout=min(timeout + 10, 90),
+                        interval=interval,
+                        style=style,
+                        headers=headers,
+                    )
 
                 content_type = response.headers.get("content-type", "")
                 return verify(
@@ -327,7 +379,7 @@ async def chat_async(
                 )
     except:
         await asyncio.sleep(interval)
-        return await chat_async(url, model, stream, token, retry - 1, timeout, interval)
+        return await chat_async(url, model, stream, token, retry - 1, timeout, interval, style, headers)
 
 
 def check(
@@ -337,6 +389,8 @@ def check(
     wander: bool = False,
     model: str = "gpt-3.5-turbo",
     detect: bool = True,
+    style: int = 0,
+    headers: dict = None,
 ) -> str:
     target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
     stream, version = False, 0
@@ -346,7 +400,15 @@ def check(
 
     for url in urls:
         # available check
-        result = chat(url=url, model=model, timeout=30, stream=params.stream == 1, token=params.token)
+        result = chat(
+            url=url,
+            model=model,
+            stream=params.stream == 1,
+            token=params.token,
+            timeout=30,
+            style=style,
+            headers=headers,
+        )
         if result.available:
             target, stream, version = url, result.stream, result.version
             break
@@ -363,14 +425,30 @@ def check(
     if detect:
         if params.stream == -1:
             # stream support check
-            result = chat(url=target, model=model, timeout=30, stream=True, token=params.token)
+            result = chat(
+                url=target,
+                model=model,
+                stream=True,
+                token=params.token,
+                timeout=30,
+                style=style,
+                headers=headers,
+            )
             stream = result.stream or stream
         else:
             stream = stream or params.stream == 1
 
         if params.version == -1 and not model.startswith("gpt-4"):
             # version check
-            result = chat(url=target, model=get_model(version=4), timeout=30, stream=False, token=params.token)
+            result = chat(
+                url=target,
+                model=get_model(version=4),
+                stream=False,
+                token=params.token,
+                timeout=30,
+                style=style,
+                headers=headers,
+            )
             version = result.version if result.available else version
         else:
             version = params.version
@@ -393,6 +471,8 @@ def check_concurrent(
     num_threads: int = -1,
     show_progress: bool = False,
     index: int = 0,
+    style: int = 0,
+    headers: str = "",
 ) -> list[str]:
     if not sites or not isinstance(sites, list):
         logger.warning(f"[Interactive] skip process due to lines is empty")
@@ -401,7 +481,11 @@ def check_concurrent(
     filename = utils.trim(filename)
     model = utils.trim(model) or "gpt-3.5-turbo"
     index = max(0, index)
-    tasks = [[x, filename, potentials, wander, model, True] for x in sites if x]
+
+    # parse customize headers
+    customize_headers = parse_headers(content=headers, delimiter="|")
+
+    tasks = [[x, filename, potentials, wander, model, True, style, customize_headers] for x in sites if x]
 
     result = utils.multi_thread_run(
         func=check,
@@ -422,6 +506,8 @@ async def check_async(
     model: str = "gpt-3.5-turbo",
     concurrency: int = 512,
     show_progress: bool = True,
+    style: int = 0,
+    headers: str = "",
 ) -> list[str]:
     async def checkone(
         domain: str,
@@ -429,6 +515,8 @@ async def check_async(
         semaphore: asyncio.Semaphore,
         model: str = "gpt-3.5-turbo",
         detect: bool = True,
+        style: int = 0,
+        headers: dict = None,
     ) -> str:
         async with semaphore:
             target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
@@ -446,6 +534,8 @@ async def check_async(
                     token=params.token,
                     timeout=30,
                     interval=3,
+                    style=style,
+                    headers=headers,
                 )
                 if result.available:
                     target, stream, version = url, result.stream, result.version
@@ -470,6 +560,8 @@ async def check_async(
                         token=params.token,
                         timeout=30,
                         interval=3,
+                        style=style,
+                        headers=headers,
                     )
                     stream = result.stream or stream
                 else:
@@ -484,6 +576,8 @@ async def check_async(
                         token=params.token,
                         timeout=30,
                         interval=3,
+                        style=style,
+                        headers=headers,
                     )
                     version = result.version if result.available else version
                 else:
@@ -508,6 +602,9 @@ async def check_async(
     filename = utils.trim(filename)
     model = utils.trim(model) or "gpt-3.5-turbo"
 
+    # parse customize request headers
+    customize_headers = parse_headers(content=headers, delimiter="|")
+
     concurrency = 256 if concurrency <= 0 else concurrency
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -518,7 +615,19 @@ async def check_async(
         # show progress bar
         tasks, targets = [], []
         for site in sites:
-            tasks.append(asyncio.create_task(checkone(site, filename, semaphore, model, True)))
+            tasks.append(
+                asyncio.create_task(
+                    checkone(
+                        domain=site,
+                        filename=filename,
+                        semaphore=semaphore,
+                        model=model,
+                        detect=True,
+                        style=style,
+                        headers=customize_headers,
+                    )
+                )
+            )
 
         pbar = tqdm(total=len(tasks), desc="Processing", unit="task")
         for task in asyncio.as_completed(tasks):
@@ -531,7 +640,19 @@ async def check_async(
         pbar.close()
     else:
         # no progress bar
-        tasks = [checkone(domain, filename, semaphore, model, True) for domain in sites if domain]
+        tasks = [
+            checkone(
+                domain=domain,
+                filename=filename,
+                semaphore=semaphore,
+                model=model,
+                detect=True,
+                style=style,
+                headers=customize_headers,
+            )
+            for domain in sites
+            if domain
+        ]
         targets = [x for x in await asyncio.gather(*tasks)]
 
     logger.info(f"[Interactive] async check completed, cost: {time.time()-starttime:.2f}s")
@@ -548,6 +669,8 @@ def batch_probe(
     show_progress: bool = False,
     num_threads: int = 0,
     chunk: int = 512,
+    style: int = 0,
+    headers: str = "",
 ) -> list[str]:
     if not candidates or not isinstance(candidates, list):
         return []
@@ -563,6 +686,8 @@ def batch_probe(
                 model=model,
                 concurrency=num_threads,
                 show_progress=show_progress,
+                style=style,
+                headers=headers,
             )
         )
     # concurrent check
@@ -575,11 +700,13 @@ def batch_probe(
             model=model,
             num_threads=num_threads,
             show_progress=show_progress,
+            style=style,
+            headers=headers,
         )
     # sharding
     else:
         slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
-        tasks = [[x, filename, potentials, wander, model, num_threads, show_progress] for x in slices]
+        tasks = [[x, filename, potentials, wander, model, num_threads, show_progress, style, headers] for x in slices]
         results = utils.multi_process_run(func=check_concurrent, tasks=tasks)
         sites = [x for r in results if r for x in r]
 

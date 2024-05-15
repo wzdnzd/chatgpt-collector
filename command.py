@@ -40,6 +40,8 @@ def main(args: argparse.Namespace) -> None:
         "wander": args.wander,
         "potentials": utils.trim(args.latent).lower(),
         "exclude": utils.trim(args.exclude),
+        "style": args.template,
+        "headers": utils.trim(args.zany),
     }
 
     filename = utils.trim(args.persist)
@@ -257,6 +259,16 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-t",
+        "--template",
+        type=int,
+        required=False,
+        default=0,
+        choices=[0, 1],
+        help="request body format, 0 means to use the OpenAI style and 1 means to use the Azure style",
+    )
+
+    parser.add_argument(
         "-u",
         "--username",
         type=str,
@@ -271,6 +283,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="whether to use common APIs for probing",
+    )
+
+    parser.add_argument(
+        "-z",
+        "--zany",
+        type=str,
+        required=False,
+        default="",
+        help="custom request headers are separated by '|', and the key-value pairs of the headers are separated by ':'",
     )
 
     main(parser.parse_args())

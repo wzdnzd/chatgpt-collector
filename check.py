@@ -80,6 +80,8 @@ def main(args: argparse.Namespace) -> None:
                         model=model,
                         concurrency=num_threads,
                         show_progress=args.display,
+                        style=args.style,
+                        headers=args.zany,
                     )
                 )
 
@@ -103,10 +105,12 @@ def main(args: argparse.Namespace) -> None:
                         num_threads=num_threads,
                         show_progress=show,
                         index=0,
+                        style=args.style,
+                        headers=args.zany,
                     )
             else:
                 tasks = [
-                    [x, dest, potentials, args.wander, model, num_threads, args.display, i + 1]
+                    [x, dest, potentials, args.wander, model, num_threads, args.display, i + 1, args.style, args.zany]
                     for i, x in enumerate(chunks)
                 ]
                 utils.multi_process_run(func=interactive.check_concurrent, tasks=tasks)
@@ -204,6 +208,16 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-s",
+        "--style",
+        type=int,
+        required=False,
+        default=0,
+        choices=[0, 1],
+        help="request body format, 0 means to use the OpenAI style and 1 means to use the Azure style",
+    )
+
+    parser.add_argument(
         "-t",
         "--thread",
         type=int,
@@ -219,6 +233,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="whether to use common APIs for probing",
+    )
+
+    parser.add_argument(
+        "-z",
+        "--zany",
+        type=str,
+        required=False,
+        default="",
+        help="custom request headers are separated by '|', and the key-value pairs of the headers are separated by ':'",
     )
 
     main(parser.parse_args())

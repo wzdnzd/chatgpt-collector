@@ -250,7 +250,7 @@ def extract_homepage(url: str) -> str:
         if not data:
             return ""
 
-        homepage = data.get("homepage", "")
+        homepage = utils.extract_domain(url=data.get("homepage", ""), include_protocal=True).lower()
         if homepage and (not isurl(homepage) or homepage.startswith("https://github.com/")):
             homepage = ""
 
@@ -365,7 +365,7 @@ def query_deployments_page(
                 break
 
             deployment = utils.trim(fork.get("deployments_url", "")).lower()
-            homepage = utils.trim(fork.get("homepage", "")).lower()
+            homepage = utils.extract_domain(url=utils.trim(fork.get("homepage", "")), include_protocal=True).lower()
             if not isurl(homepage) or homepage.startswith("https://github.com/"):
                 homepage = ""
 
@@ -538,6 +538,15 @@ def collect(params: dict) -> list:
     # run type
     run_async = params.get("async", True)
 
+    # regex for dropped domains
+    exclude = utils.trim(params.get("exclude", ""))
+
+    # request body template
+    style = params.get("style", 0)
+
+    # customize request headers
+    headers = params.get("headers", "")
+
     # github username
     username = utils.trim(params.get("username", ""))
 
@@ -584,6 +593,12 @@ def collect(params: dict) -> list:
                 if deployment:
                     deployments.append(deployment)
                 if homepage:
+                    try:
+                        if re.search(exclude, homepage, flags=re.I) is not None:
+                            continue
+                    except:
+                        logger.warning(f"[Pipeline] invalid exclude regex: {exclude}")
+
                     domains.add(homepage)
 
         # add local existing deployments if necessary
@@ -610,9 +625,6 @@ def collect(params: dict) -> list:
                     utils.write_file(material_file, homepages, True)
 
             if deployments:
-                # regex for dropped domains
-                exclude = utils.trim(params.get("exclude", ""))
-
                 args = [[x, material_file, 1, 100, session, True, last, exclude, False] for x in deployments]
                 logger.info(f"[Pipeline] extract target domain begin, count: {len(args)}")
 
@@ -662,6 +674,8 @@ def collect(params: dict) -> list:
         show_progress=True,
         num_threads=num_threads,
         chunk=chunk,
+        style=style,
+        headers=headers,
     )
 
     # deduplication and sort
