@@ -1,2 +1,2 @@
 # ChatGPT APIs
-> some ChatGPT APIs collected from web
+> Some ChatGPT APIs Collected From Web

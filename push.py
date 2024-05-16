@@ -23,6 +23,22 @@ class PushTo(object):
         self.method = "PUT"
         self.token = "" if not token or not isinstance(token, str) else token
 
+    def _storage(self, content: str, filename: str, folder: str = "") -> bool:
+        if not content or not filename:
+            return False
+
+        basedir = os.path.abspath(os.environ.get("LOCAL_BASEDIR", ""))
+        try:
+            savepath = os.path.abspath(os.path.join(basedir, folder, filename))
+            os.makedirs(os.path.dirname(savepath), exist_ok=True)
+            with open(savepath, "w+", encoding="utf8") as f:
+                f.write(content)
+                f.flush()
+
+            return True
+        except:
+            return False
+
     def push_file(self, filepath: str, push_conf: dict, group: str = "", retry: int = 5) -> bool:
         if not os.path.exists(filepath) or not os.path.isfile(filepath):
             logger.error(f"[PushFileError] file {filepath} not found")
@@ -39,11 +55,14 @@ class PushTo(object):
             logger.error(f"[PushError] push config is invalidate, domain: {self.name}")
             return False
 
+        if push_conf.get("local", ""):
+            self._storage(content=content, filename=push_conf.get("local"))
+
         url, data, headers = self._generate_payload(content=content, push_conf=push_conf)
 
         try:
             request = urllib.request.Request(url=url, data=data, headers=headers, method=self.method)
-            response = urllib.request.urlopen(request, timeout=30, context=utils.CTX)
+            response = urllib.request.urlopen(request, timeout=60, context=utils.CTX)
             if self._is_success(response):
                 logger.info(f"[PushSuccess] push subscribes information to {self.name} successed, group=[{group}]")
                 return True
@@ -130,11 +149,13 @@ class PushToPasteGG(PushTo):
         return configs
 
     def raw_url(self, push_conf: dict) -> str:
-        fileid, folderid, username = (
-            push_conf.get("fileid"),
-            push_conf.get("folderid"),
-            push_conf.get("username"),
-        )
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        fileid = push_conf.get("fileid", "")
+        folderid = push_conf.get("folderid", "")
+        username = push_conf.get("username", "")
+
         if not fileid or not folderid or not username:
             return ""
 
@@ -170,9 +191,14 @@ class PushToFarsEE(PushTo):
         return configs
 
     def raw_url(self, push_conf: dict) -> str:
-        fileid = push_conf.get("fileid")
+        if not push_conf or type(push_conf) != dict or not push_conf.get("fileid", ""):
+            return ""
+
+        fileid = push_conf.get("fileid", "")
         return f"{self.api_address}/{fileid}"
 
+
+class PushToDevbin(PushToPasteGG):
     """https://devbin.dev"""
 
     def __init__(self, token: str) -> None:
@@ -218,11 +244,15 @@ class PushToFarsEE(PushTo):
         self.api_address = "https://beta.devbin.dev/api/v3/paste"
 
     def raw_url(self, push_conf: dict) -> str:
-        fileid = push_conf.get("fileid")
+        if not push_conf or type(push_conf) != dict or not push_conf.get("fileid", ""):
+            return ""
+
+        fileid = push_conf.get("fileid", "")
+
         return f"https://devbin.dev/Raw/{fileid}"
 
 
-class PushToPastefy(PushToPasteGG):
+class PushToPastefy(PushToDevbin):
     """https://pastefy.ga"""
 
     def __init__(self, token: str) -> None:
@@ -245,21 +275,6 @@ class PushToPastefy(PushToPasteGG):
 
         return url, data, headers
 
-    def validate(self, push_conf: dict) -> bool:
-        if not push_conf or type(push_conf) != dict:
-            return False
-
-        fileid = push_conf.get("fileid", "")
-        return "" != self.token.strip() and "" != fileid.strip()
-
-    def filter_push(self, push_conf: dict) -> dict:
-        configs = {}
-        for k, v in push_conf.items():
-            if v.get("fileid", "") and self.token:
-                configs[k] = v
-
-        return configs
-
     def _is_success(self, response: HTTPResponse) -> bool:
         if not response or response.getcode() != 200:
             return False
@@ -273,7 +288,13 @@ class PushToPastefy(PushToPasteGG):
         logger.error(f"[PushError]: group=[{group}], name: {self.name}, error message: \n{traceback.format_exc()}")
 
     def raw_url(self, push_conf: dict) -> str:
-        fileid = push_conf.get("fileid")
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        fileid = utils.trim(push_conf.get("fileid", ""))
+        if not fileid:
+            return ""
+
         return f"https://pastefy.ga/{fileid}/raw"
 
 
@@ -283,10 +304,16 @@ class PushToDrift(PushToPastefy):
     def __init__(self, token: str) -> None:
         super().__init__(token=token)
         self.name = "drift"
-        self.api_address = "https://pastebin.enjoyit.ml/api/file"
+        self.api_address = "https://paste.ding.free.hr/api/file"
 
     def raw_url(self, push_conf: dict) -> str:
-        fileid = push_conf.get("fileid")
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        fileid = push_conf.get("fileid", "")
+        if utils.isblank(text=fileid):
+            return ""
+
         return f"{self.api_address}/raw/{fileid}"
 
     def _is_success(self, response: HTTPResponse) -> bool:
@@ -321,7 +348,110 @@ class PushToImperial(PushToPastefy):
         return self.api_address, data, headers
 
 
-PUSHTYPE = Enum("PUSHTYPE", ("pastebin.enjoyit.ml", "pastefy.ga", "paste.gg", "imperialb.in"))
+class PushToLocal(PushTo):
+    def __init__(self) -> None:
+        super().__init__(token="")
+        self.name = "local"
+
+    def validate(self, push_conf: dict) -> bool:
+        return push_conf is not None and push_conf.get("fileid", "")
+
+    def push_to(self, content: str, push_conf: dict, group: str = "", retry: int = 5) -> bool:
+        folder = push_conf.get("folderid", "")
+        filename = push_conf.get("fileid", "")
+        success = self._storage(content=content, filename=filename, folder=folder)
+        message = "successed" if success else "failed"
+        logger.info(f"[PushInfo] push subscribes information to {self.name} {message}, group=[{group}]")
+        return success
+
+    def filter_push(self, push_conf: dict) -> dict:
+        return {k: v for k, v in push_conf.items() if v.get("fileid", "")}
+
+    def raw_url(self, push_conf: dict) -> str:
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        fileid = push_conf.get("fileid", "")
+        folderid = push_conf.get("folderid", "")
+        filepath = os.path.abspath(os.path.join(folderid, fileid))
+        return f"{utils.FILEPATH_PROTOCAL}{filepath}"
+
+
+class PushToGist(PushTo):
+    def __init__(self, token: str) -> None:
+        super().__init__(token=token)
+
+        self.name = "gist"
+        self.api_address = "https://api.github.com/gists"
+        self.method = "PATCH"
+
+    def validate(self, push_conf: dict) -> bool:
+        if not isinstance(push_conf, dict):
+            return False
+
+        gistid = push_conf.get("gistid", "")
+        filename = push_conf.get("filename", "")
+
+        return "" != self.token.strip() and "" != gistid.strip() and "" != filename.strip()
+
+    def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
+        gistid = push_conf.get("gistid", "")
+        filename = push_conf.get("filename", "")
+
+        url = f"{self.api_address}/{gistid}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": utils.USER_AGENT,
+        }
+
+        data = json.dumps({"files": {filename: {"content": content, "filename": filename}}}).encode("UTF8")
+        return url, data, headers
+
+    def _is_success(self, response: HTTPResponse) -> bool:
+        return response and response.getcode() == 200
+
+    def filter_push(self, push_conf: dict) -> dict:
+        if not self.token or not isinstance(push_conf, dict):
+            return {}
+
+        return {
+            k: v
+            for k, v in push_conf.items()
+            if k and isinstance(v, dict) and v.get("gistid", "") and v.get("filename", "")
+        }
+
+    def raw_url(self, push_conf: dict) -> str:
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        username = utils.trim(push_conf.get("username", ""))
+        gistid = utils.trim(push_conf.get("gistid", ""))
+        revision = utils.trim(push_conf.get("revision", ""))
+        filename = utils.trim(push_conf.get("filename", ""))
+
+        if not username or not gistid or filename:
+            return ""
+
+        prefix = f"https://gist.githubusercontent.com/{username}/{gistid}"
+        if revision:
+            return f"{prefix}/{revision}/{filename}"
+
+        return f"{prefix}/{filename}"
+
+
+PUSHTYPE = Enum(
+    "PUSHTYPE",
+    (
+        "paste.ding.free.hr",
+        "pastefy.ga",
+        "paste.gg",
+        "imperialb.in",
+        "gist.githubusercontent.com",
+    ),
+)
 
 
 def get_instance(domain: str) -> PushTo:
@@ -331,18 +461,21 @@ def get_instance(domain: str) -> PushTo:
             if domain == item.name:
                 return item.value
 
-        return 1
-
-    token = os.environ.get("PUSH_TOKEN", "").strip()
-    if not token:
-        raise ValueError(f"[PushError] not found 'PUSH_TOKEN' in environment variables, please check it and try again")
+        return 0
 
     push_type = confirm_pushtype(url=domain)
+    token = os.environ.get("PUSH_TOKEN", "").strip()
+    if push_type != 0 and not token:
+        raise ValueError(f"[PushError] not found 'PUSH_TOKEN' in environment variables, please check it and try again")
+
     if push_type == 1:
         return PushToDrift(token=token)
     elif push_type == 2:
         return PushToPastefy(token=token)
     elif push_type == 3:
         return PushToPasteGG(token=token)
-
-    return PushToImperial(token=token)
+    elif push_type == 4:
+        return PushToImperial(token=token)
+    elif push_type == 5:
+        return PushToGist(token=token)
+    return PushToLocal()
