@@ -744,7 +744,7 @@ def no_model(content: str) -> bool:
     if not content:
         return False
 
-    return re.search(r"model_not_found|对于模型.*?无可用渠道", content, flags=re.I) is not None
+    return re.search(r"model_not_found|对于模型.*?无可用渠道|Anthropic|Claude", content, flags=re.I) is not None
 
 
 def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "") -> str:
