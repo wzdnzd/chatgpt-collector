@@ -1,0 +1,5 @@
+aiofiles
+aiohttp                                                                                                                                                                                       
+certifi
+cryptography
+nopecha
