@@ -5,7 +5,9 @@
 
 import json
 import os
+import random
 import re
+import time
 import traceback
 from dataclasses import dataclass
 from urllib import request
@@ -176,6 +178,9 @@ def checkin_one(
     # checkin
     response, retry = None, max(1, retry)
     while not response and retry > 0:
+        # sleep randomly
+        time.sleep(random.uniform(0.1, 2.0))
+
         retry -= 1
         try:
             req = request.Request(url=url, data=payload, headers=headers, method="POST")
