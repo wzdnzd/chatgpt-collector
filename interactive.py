@@ -297,7 +297,11 @@ def chat(
     if not response or response.getcode() != 200:
         return CheckResult(available=False)
 
-    text = response.read()
+    try:
+        text = response.read()
+    except:
+        text = b""
+
     try:
         content = text.decode(encoding="UTF8")
     except UnicodeDecodeError:
