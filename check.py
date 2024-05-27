@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import os
 import traceback
+from collections import defaultdict
 from datetime import datetime
 
 from tqdm import tqdm
@@ -17,8 +18,7 @@ from logger import logger
 
 
 def read_in_chunks(filepath: str, chunk_size: int = 100):
-    if not os.path.exists(filepath) or not os.path.isfile(filepath):
-        raise FileNotFoundError(f"{filepath} was not found or is a directory")
+    precheck(filepath=filepath)
 
     chunk_size = max(1, chunk_size)
     with open(filepath, "r", encoding="utf8") as f:
@@ -38,11 +38,51 @@ def read_in_chunks(filepath: str, chunk_size: int = 100):
 
 
 def count_lines(filepath: str) -> int:
-    if not os.path.exists(filepath) or not os.path.isfile(filepath):
-        raise FileNotFoundError(f"{filepath} was not found or is a directory")
+    precheck(filepath=filepath)
 
     with open(filepath, "r", encoding="utf8") as f:
         return sum(1 for _ in f)
+
+
+def dedup(filepath: str) -> None:
+    precheck(filepath=filepath)
+
+    lines, groups, links = [], defaultdict(set), []
+    with open(filepath, "r", encoding="utf8") as f:
+        lines = f.readlines()
+
+    # filetr and group by domain
+    for line in lines:
+        line = utils.trim(line).lower()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+
+        domain = utils.extract_domain(url=line, include_protocal=False)
+        if domain:
+            groups[domain].add(line)
+
+    # under the same domain name, give priority to URLs starting with https://
+    for v in groups.values():
+        if not v:
+            continue
+
+        urls = list(v)
+        if len(urls) > 1:
+            urls.sort(key=lambda x: 0 if x.startswith("https://") else 1)
+
+        links.append(urls[0])
+
+    total, remain = len(lines), len(links)
+    logger.info(f"[Check] finished dedup for file: {filepath}, total: {total}, remain: {remain}, drop: {total-remain}")
+
+    utils.write_file(filename=filepath, lines=links, overwrite=True)
+
+
+def precheck(filepath: str) -> None:
+    filepath = utils.trim(filepath)
+
+    if not os.path.exists(filepath) or not os.path.isfile(filepath):
+        raise FileNotFoundError(f"[Check] {filepath} was not found or is a directory")
 
 
 def main(args: argparse.Namespace) -> None:
@@ -66,6 +106,9 @@ def main(args: argparse.Namespace) -> None:
 
     potentials = utils.trim(args.latent).lower()
     num_processes, num_threads = args.process, args.thread
+
+    # dedup candidates
+    dedup(filepath=source)
 
     try:
         if not args.blocked:
