@@ -64,15 +64,16 @@ def last_history(url: str, refresh: bool) -> datetime:
     return last
 
 
-def generate_path(repository: str, filename: str, username: str = "") -> str:
+def generate_path(repository: str, filename: str, username: str = "", concat: bool = False) -> str:
     filename = utils.trim(filename)
     if not filename:
         raise ValueError("filename cannot be empty")
 
     repository = utils.trim(repository).lower()
     username = utils.trim(username).lower()
+    subpath = repository if not concat else f"{username}-{repository}"
 
-    return os.path.join(utils.PATH, "data", username, repository, filename)
+    return os.path.join(utils.PATH, "data", subpath, filename)
 
 
 def query_forks_count(username: str, repository: str, retry: int = 3) -> int:
@@ -553,21 +554,26 @@ def collect(params: dict) -> list:
     # github repository
     repository = utils.trim(params.get("repository", ""))
 
+    # whether to concatenate username and repository as the folder name
+    concat = params.get("concat", False)
+
     if not username or not repository:
         logger.error(f"[Pipeline] github username or repository cannot be blank")
         return []
 
     # deployments filepath
-    deployments_file = generate_path(repository=repository, filename="deployments.txt")
+    deployments_file = generate_path(
+        username=username, repository=repository, filename="deployments.txt", concat=concat
+    )
 
     # domains filepath
-    material_file = generate_path(repository=repository, filename="material.txt")
+    material_file = generate_path(username=username, repository=repository, filename="material.txt", concat=concat)
 
     # candidates filepath
-    candidates_file = generate_path(repository=repository, filename="candidates.txt")
+    candidates_file = generate_path(username=username, repository=repository, filename="candidates.txt", concat=concat)
 
     # result filepath
-    sites_file = generate_path(repository=repository, filename="sites.txt")
+    sites_file = generate_path(username=username, repository=repository, filename="sites.txt", concat=concat)
 
     mode, starttime = "LOCAL" if is_local() else "REMOTE", time.time()
     logger.info(

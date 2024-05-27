@@ -132,3 +132,4 @@ local.json
 .vscode/
 
 /data
+/cmd/histories.cmd

@@ -28,7 +28,8 @@ def main(args: argparse.Namespace) -> None:
     params = {
         "sort": args.sort,
         "refresh": args.generate,
-        "checkonly": args.checkonly,
+        "checkonly": args.verify,
+        "concat": args.concat,
         "overlay": args.overlay,
         "model": args.model,
         "num_threads": args.num,
@@ -125,11 +126,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-c",
-        "--check",
-        dest="checkonly",
+        "--concat",
+        dest="concat",
         action="store_true",
         default=False,
-        help="only check exists sites",
+        help="whether to concatenate username and repository as the folder name",
     )
 
     parser.add_argument(
@@ -274,6 +275,15 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="github username",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verify",
+        dest="verify",
+        action="store_true",
+        default=False,
+        help="only check exists sites",
     )
 
     parser.add_argument(
