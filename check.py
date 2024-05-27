@@ -100,15 +100,20 @@ def main(args: argparse.Namespace) -> None:
         result = f"availables-{model}-{current}.txt"
 
     dest = os.path.abspath(os.path.join(os.path.dirname(source), result))
+    # merge dest file content into source file if exist
+    if os.path.exists(dest) and os.path.isfile(dest):
+        with open(dest, "r", encoding="utf8") as f:
+            lines = [x.strip().lower().replace("\n", "") for x in f.readlines() if x]
+            utils.write_file(filename=source, lines=lines, overwrite=False)
 
-    if args.overwrite and os.path.exists(dest) and os.path.isfile(dest):
-        os.remove(dest)
-
-    potentials = utils.trim(args.latent).lower()
-    num_processes, num_threads = args.process, args.thread
+        if args.overwrite:
+            os.remove(dest)
 
     # dedup candidates
     dedup(filepath=source)
+
+    potentials = utils.trim(args.latent).lower()
+    num_processes, num_threads = args.process, args.thread
 
     try:
         if not args.blocked:
@@ -157,6 +162,9 @@ def main(args: argparse.Namespace) -> None:
                     for i, x in enumerate(chunks)
                 ]
                 utils.multi_process_run(func=interactive.check_concurrent, tasks=tasks)
+
+        # dedup result file
+        dedup(filepath=dest)
 
         logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
     except FileNotFoundError:
