@@ -58,6 +58,9 @@ class CheckResult(object):
 
 @dataclass
 class RequestParams(object):
+    # 请求地址
+    url: str = ""
+
     # 是否支持流式输出
     stream: int = -1
 
@@ -132,8 +135,31 @@ def get_payload(model: str, stream: bool = True, style: int = 0) -> dict:
     return payload
 
 
-def get_model(version: int) -> str:
-    return "gpt-4" if version == 4 else "gpt-3.5-turbo"
+def get_model_name(provider: str, version: int) -> str:
+    provider = utils.trim(provider).lower()
+    if provider.startswith("claude"):
+        return "claude-3-opus-20240229" if version == 4 else "claude-3-haiku-20240307"
+
+    return "gpt-4-turbo" if version == 4 else "gpt-3.5-turbo"
+
+
+def get_model_version(model: str, soft: bool = False, opposite: bool = False) -> int:
+    model = utils.trim(model).lower()
+    if not model:
+        return 0
+
+    if model.startswith("gpt-") or model.startswith("claude-"):
+        return 4 if model.startswith("gpt-4") or model == "claude-3-opus-20240229" else 3
+
+    if soft and re.search(r"-4", model) is not None:
+        return 4
+
+    return 3 if not opposite else 0
+
+
+def need_check_version(model: str) -> bool:
+    model = utils.trim(model).lower()
+    return (model.startswith("gpt-") or model.startswith("claude-")) and get_model_version(model=model) == 3
 
 
 def support_version() -> list[int]:
@@ -141,12 +167,14 @@ def support_version() -> list[int]:
 
 
 def parse_url(url: str) -> RequestParams:
-    stream, version, token, model = -1, -1, "", ""
+    address, stream, version, token, model = "", -1, -1, "", ""
 
     url = utils.trim(url)
     if url:
         try:
             result = parse.urlparse(url)
+            address = f"{result.scheme}://{result.netloc}{result.path}"
+
             if result.query:
                 params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
 
@@ -166,7 +194,7 @@ def parse_url(url: str) -> RequestParams:
         except:
             logger.error(f"[Interactive] invalid url: {url}")
 
-    return RequestParams(stream=stream, version=version, token=token, model=model)
+    return RequestParams(url=address, stream=stream, version=version, token=token, model=model)
 
 
 def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[str]:
@@ -208,7 +236,7 @@ def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[st
                 url = parse.urljoin(domain, subpath)
                 urls.append(url)
         else:
-            urls.append(f"{result.scheme}://{result.netloc}{result.path}")
+            urls.append(domain)
 
         return urls
     except:
@@ -275,7 +303,7 @@ def chat(
                 timeout=timeout,
             )
         except error.HTTPError as e:
-            if e.code in [400, 401]:
+            if e.code == 400:
                 return CheckResult(available=False, terminate=True)
 
             try:
@@ -285,7 +313,14 @@ def chat(
             except:
                 content = ""
 
-            if no_model(content=content):
+            if e.code == 401:
+                terminate = not not_ternimate(content=content)
+                if not terminate:
+                    # authorization success but no provider, see: https://github.com/lobehub/lobe-chat/blob/main/src/app/api/chat/%5Bprovider%5D/route.ts
+                    logger.warning(f"[Interactive] authorization success but no provider, url: {url}, model: {model}")
+                return CheckResult(available=False, terminate=terminate)
+
+            if no_model(content=content, model=model):
                 return CheckResult(available=False, terminate=True, notfound=True)
         except error.URLError as e:
             return CheckResult(available=False, terminate=True)
@@ -349,7 +384,14 @@ async def chat_async(
                     terminal = response.status in [400, 401]
                     try:
                         content = await response.text()
-                        notfound = no_model(content=content)
+                        notfound = no_model(content=content, model=model)
+
+                        # authorization success but no provider, see: https://github.com/lobehub/lobe-chat/blob/main/src/app/api/chat/%5Bprovider%5D/route.ts
+                        if response.status == 401 and not_ternimate(content=content):
+                            logger.warning(
+                                f"[Interactive] authorization success but no provider, url: {url}, model: {model}"
+                            )
+                            terminal = False
                     except asyncio.TimeoutError:
                         notfound = False
 
@@ -397,16 +439,19 @@ def check(
     headers: dict = None,
 ) -> str:
     target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
-    stream, version = False, 0
-
-    params = parse_url(url=domain)
-    model = params.model or model or "gpt-3.5-turbo"
+    stream, version, params, real_model = False, 0, None, ""
 
     for url in urls:
+        params = parse_url(url=url)
+        if not params or not params.url:
+            continue
+
+        real_model = params.model or model or "gpt-3.5-turbo"
+
         # available check
         result = chat(
-            url=url,
-            model=model,
+            url=params.url,
+            model=real_model,
             stream=params.stream == 1,
             token=params.token,
             timeout=30,
@@ -414,10 +459,10 @@ def check(
             headers=headers,
         )
         if result.available:
-            target, stream, version = url, result.stream, result.version
+            target, stream, version = params.url, result.stream, result.version
             break
         elif result.notfound:
-            logger.warning(f"[Interactive] url {url} available but no {model} model exists")
+            logger.warning(f"[Interactive] url {params.url} available but no {real_model} model exists")
             break
         elif result.terminate:
             # if terminal is true, all attempts should be aborted immediately
@@ -431,7 +476,7 @@ def check(
             # stream support check
             result = chat(
                 url=target,
-                model=model,
+                model=real_model,
                 stream=True,
                 token=params.token,
                 timeout=30,
@@ -442,11 +487,11 @@ def check(
         else:
             stream = stream or params.stream == 1
 
-        if params.version == -1 and not model.startswith("gpt-4"):
+        if params.version == -1 and need_check_version(model=real_model):
             # version check
             result = chat(
                 url=target,
-                model=get_model(version=4),
+                model=get_model_name(provider=real_model, version=4),
                 stream=False,
                 token=params.token,
                 timeout=30,
@@ -524,16 +569,19 @@ async def check_async(
     ) -> str:
         async with semaphore:
             target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
-            stream, version = False, 0
-
-            params = parse_url(url=domain)
-            model = params.model or model or "gpt-3.5-turbo"
+            stream, version, params, real_model = False, 0, None, ""
 
             for url in urls:
+                params = parse_url(url=url)
+                if not params or not params.url:
+                    continue
+
+                real_model = params.model or model or "gpt-3.5-turbo"
+
                 # available check
                 result = await chat_async(
-                    url=url,
-                    model=model,
+                    url=params.url,
+                    model=real_model,
                     stream=params.stream == 1,
                     token=params.token,
                     timeout=30,
@@ -542,10 +590,10 @@ async def check_async(
                     headers=headers,
                 )
                 if result.available:
-                    target, stream, version = url, result.stream, result.version
+                    target, stream, version = params.url, result.stream, result.version
                     break
                 elif result.notfound:
-                    logger.warning(f"[Interactive] url {url} available but no {model} model exists")
+                    logger.warning(f"[Interactive] url {params.url} available but no {real_model} model exists")
                     break
                 elif result.terminate:
                     # if terminal is true, all attempts should be aborted immediately
@@ -558,8 +606,8 @@ async def check_async(
                 if params.stream == -1:
                     # stream support check
                     result = await chat_async(
-                        url=url,
-                        model=model,
+                        url=target,
+                        model=real_model,
                         stream=True,
                         token=params.token,
                         timeout=30,
@@ -571,11 +619,11 @@ async def check_async(
                 else:
                     stream = stream or params.stream == 1
 
-                if params.version == -1 and not model.startswith("gpt-4"):
+                if params.version == -1 and need_check_version(model=real_model):
                     # version check
                     result = await chat_async(
                         url=url,
-                        model=get_model(version=4),
+                        model=get_model_name(provider=real_model, version=4),
                         stream=False,
                         token=params.token,
                         timeout=30,
@@ -743,12 +791,25 @@ def read_response(response: HTTPResponse, expected: int = 200, deserialize: bool
         return None
 
 
-def no_model(content: str) -> bool:
+def no_model(content: str, model: str = "") -> bool:
     content = utils.trim(content)
     if not content:
         return False
 
-    return re.search(r"model_not_found|对于模型.*?无可用渠道|Anthropic|Claude", content, flags=re.I) is not None
+    pattern = r"model_not_found|对于模型.*?无可用渠道"
+    model = utils.trim(model).lower()
+    if not model.startswith("claude-"):
+        pattern = rf"{pattern}|Anthropic|Claude"
+
+    return re.search(pattern, content, flags=re.I) is not None
+
+
+def not_ternimate(content: str) -> bool:
+    content = utils.trim(content)
+    if not content:
+        return False
+
+    return re.search(r'"errorType":(\s+)?401', content, flags=re.I) is not None
 
 
 def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "") -> str:
@@ -807,13 +868,6 @@ def verify(
         except:
             return False, "", ""
 
-    def get_version(model: str) -> int:
-        model = utils.trim(model)
-        if not model:
-            return 0
-
-        return 4 if model.startswith("gpt-4") or re.search(r"-4", model) is not None else 3
-
     def support_stream(content: str, strict: bool) -> tuple[bool, str, str]:
         if not content:
             return False, "", ""
@@ -838,7 +892,9 @@ def verify(
 
             success, message, name = extract_message(content=text)
             if not success:
-                support = False
+                support = len(texts) == 2
+                if len(texts) == 2:
+                    message = texts[1]
 
             model = model or name
             words.append(message)
@@ -864,7 +920,7 @@ def verify(
 
     available = re.search(keyword, text, flags=re.I) is not None and re.search(r'"error":', text, flags=re.I) is None
     model = "" if not available else model
-    version = get_version(model=model)
+    version = get_model_version(model=model, soft=True, opposite=False)
 
     # adapt old nextweb, content_type is empty but support stream
     if stream and available:
@@ -872,6 +928,6 @@ def verify(
     elif not available:
         support = False
 
-    not_exists = no_model(content=content)
+    not_exists = no_model(content=content, model=model)
     terminal = available or not_exists
     return CheckResult(available=available, stream=support, version=version, terminate=terminal, notfound=not_exists)

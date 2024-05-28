@@ -45,6 +45,20 @@ def count_lines(filepath: str) -> int:
 
 
 def dedup(filepath: str) -> None:
+    def include_subpath(url: str) -> bool:
+        url = utils.trim(url).lower()
+        if url.startswith("http://"):
+            url = url[7:]
+        elif url.startswith("https://"):
+            url = url[8:]
+
+        return "/" in url and not url.endswith("/")
+
+    def cmp(url: str) -> str:
+        x = 1 if include_subpath(url=url) else 0
+        y = 2 if url.startswith("https://") else 1 if url.startswith("http://") else 0
+        return (x, y, url)
+
     precheck(filepath=filepath)
 
     lines, groups, links = [], defaultdict(set), []
@@ -68,7 +82,7 @@ def dedup(filepath: str) -> None:
 
         urls = list(v)
         if len(urls) > 1:
-            urls.sort(key=lambda x: 0 if x.startswith("https://") else 1)
+            urls.sort(key=cmp, reverse=True)
 
         links.append(urls[0])
 
@@ -107,7 +121,11 @@ def main(args: argparse.Namespace) -> None:
             utils.write_file(filename=source, lines=lines, overwrite=False)
 
         if args.overwrite:
-            os.remove(dest)
+            backup_file = f"{dest}.bak"
+            if os.path.exists(backup_file) and os.path.isfile(backup_file):
+                os.remove(backup_file)
+
+            os.rename(dest, backup_file)
 
     # dedup candidates
     dedup(filepath=source)
