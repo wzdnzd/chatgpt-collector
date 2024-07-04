@@ -134,22 +134,31 @@ def main(args: argparse.Namespace) -> None:
     num_processes, num_threads = args.process, args.thread
 
     try:
-        if not args.blocked:
+        if not args.blocked or args.newapi:
             with open(source, mode="r", encoding="utf8") as f:
                 sites = [x.replace("\n", "") for x in f.readlines() if x]
-                asyncio.run(
-                    interactive.check_async(
-                        sites=sites,
-                        filename=dest,
-                        potentials=potentials,
-                        wander=args.wander,
-                        model=model,
-                        concurrency=num_threads,
+                if args.newapi:
+                    items = [[x, dest] for x in sites]
+                    utils.multi_thread_run(
+                        func=interactive.burst_newapi,
+                        tasks=items,
+                        num_threads=num_threads,
                         show_progress=args.display,
-                        style=args.style,
-                        headers=args.zany,
                     )
-                )
+                else:
+                    asyncio.run(
+                        interactive.check_async(
+                            sites=sites,
+                            filename=dest,
+                            potentials=potentials,
+                            wander=args.wander,
+                            model=model,
+                            concurrency=num_threads,
+                            show_progress=args.display,
+                            style=args.style,
+                            headers=args.zany,
+                        )
+                    )
 
         else:
             size, total = max(args.chunk, 1), count_lines(source)
@@ -220,6 +229,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="show check progress bar",
+    )
+
+    parser.add_argument(
+        "-n",
+        "--newapi",
+        dest="newapi",
+        action="store_true",
+        default=False,
+        help="default password detection in NewAPI or OneAPI",
     )
 
     parser.add_argument(
