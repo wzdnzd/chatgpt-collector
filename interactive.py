@@ -971,15 +971,28 @@ def burst_newapi(domain: str, filepath: str, username: str = "root", password: s
     cookies = response.getheader("Set-Cookie")
     headers["Cookie"] = cookies
 
-    # generate system access token
+    # query or re-generate system access token
     try:
-        access_token_url = f"{domain}/api/user/token"
+        info_url, token = f"{domain}/api/user/self", ""
+        content = utils.http_get(url=info_url, headers=headers)
 
-        content = utils.http_get(url=access_token_url, headers=headers)
-        data = json.loads(content) if content else {}
-        if data and data.get("success", True):
-            token = utils.trim(data.get("data", ""))
-            line = f"{line}\t{token}" if token else line
+        try:
+            result = json.loads(content)
+            data = result.get("data", {})
+            if data and isinstance(data, dict):
+                token = utils.trim(data.get("access_token", ""))
+        except:
+            pass
+
+        if not token:
+            access_token_url = f"{domain}/api/user/token"
+            content = utils.http_get(url=access_token_url, headers=headers)
+
+            data = json.loads(content) if content else {}
+            if data and data.get("success", True):
+                token = utils.trim(data.get("data", ""))
+
+        line = f"{line}\t{token}" if token else line
     except:
         logger.error(f"[Check] generate system access token failed, domain: {domain}")
 

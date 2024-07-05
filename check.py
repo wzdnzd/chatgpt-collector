@@ -114,11 +114,13 @@ def main(args: argparse.Namespace) -> None:
         result = f"availables-{model}-{current}.txt"
 
     dest = os.path.abspath(os.path.join(os.path.dirname(source), result))
+
     # merge dest file content into source file if exist
     if os.path.exists(dest) and os.path.isfile(dest):
-        with open(dest, "r", encoding="utf8") as f:
-            lines = [x.strip().lower().replace("\n", "") for x in f.readlines() if x]
-            utils.write_file(filename=source, lines=lines, overwrite=False)
+        if not args.newapi:
+            with open(dest, "r", encoding="utf8") as f:
+                lines = [x.strip().lower().replace("\n", "") for x in f.readlines() if x]
+                utils.write_file(filename=source, lines=lines, overwrite=False)
 
         if args.overwrite:
             backup_file = f"{dest}.bak"
