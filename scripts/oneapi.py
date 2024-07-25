@@ -55,21 +55,6 @@ def checkin(params: dict) -> list[str]:
             logger.error(f"[ONEAPI] skip execute checkin because disabled or invalid url: {url}")
             continue
 
-        tokens = option.get("tokens", [])
-        if not isinstance(tokens, list):
-            tokens = []
-
-        cookies = option.get("cookies", [])
-        if not isinstance(cookies, list):
-            cookies = []
-
-        if not tokens and not cookies:
-            logger.error(f"[ONEAPI] skip execute checkin url: {url} because cannot found any valid token or cookie")
-            continue
-        elif tokens and cookies and len(tokens) != len(cookies):
-            logger.error(f"[ONEAPI] skip execute checkin url: {url} due to invalid config")
-            continue
-
         path, unit = utils.trim(option.get("path", "")), 500000
         if "unit" in option:
             try:
@@ -80,15 +65,23 @@ def checkin(params: dict) -> list[str]:
         sitekey = utils.trim(option.get("sitekey", ""))
         sitelink = utils.trim(option.get("sitelink", ""))
         regex = utils.trim(option.get("done", ""))
-        account_required = option.get("account", False)
+        is_newapi = option.get("newapi", False)
 
-        lt, lc = len(tokens), len(cookies)
-        for i in range(max(lt, lc)):
-            token = utils.trim(tokens[i]) if i < lt else ""
-            cookie = utils.trim(cookies[i]) if i < lc else ""
+        accounts = option.get("accounts", [])
+        if not accounts or not isinstance(accounts, list):
+            logger.error(f"[ONEAPI] skip execute checkin due to invalid accounts")
+            continue
+
+        for account in accounts:
+            if not account or not isinstance(account, dict):
+                continue
+
+            token = utils.trim(account.get("token", ""))
+            cookie = utils.trim(account.get("cookie", ""))
+            uid = account.get("uid", None)
 
             if token or cookie:
-                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, cookie, account_required))
+                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, cookie, uid, is_newapi))
             else:
                 logger.error(f"[ONEAPI] ignore invalid token and cookie, url: {url}")
 
@@ -122,14 +115,15 @@ def checkin_one(
     sitelink: str = "",
     done_regex: str = "",
     cookie: str = "",
-    account_required: bool = False,
+    uid: str | int = None,
+    is_newapi: bool = False,
 ) -> CheckInResult:
     if not base or (not token and not cookie):
         logger.error(f"[ONEAPI] skip execute checkin because invalid url or token and cookie, url: {base}")
         return CheckInResult(url=base, success=False, token=token)
 
     url = urljoin(base, path) if path else base
-    headers = get_headers(token=token, cookie=cookie)
+    headers = get_headers(token=token, cookie=cookie, is_newapi=is_newapi, uid=uid)
     if not headers:
         logger.error(f"[ONEAPI] please provide a token or cookie, url: {base}")
         return CheckInResult(url=base, success=False, token=token)
@@ -166,14 +160,16 @@ def checkin_one(
     if turnstile:
         url = f"{url}?turnstile={turnstile}"
 
-    payload = None
-    if account_required:
+    if is_newapi and not uid:
         account = account_info(base=base, headers=headers)
         if not account:
             logger.error(f"[ONEAPI] cannot signin because fetch account failed")
             return CheckInResult(url=base, success=False, token=token)
 
-        payload = json.dumps(account).encode(encoding="UTF8")
+        uid = account.get("id", -1)
+        headers["New-Api-User"] = uid
+
+    payload = None if uid is None else json.dumps({"id": uid}).encode(encoding="UTF8")
 
     # checkin
     response, retry = None, max(1, retry)
@@ -231,9 +227,11 @@ def checkin_one(
     return CheckInResult(url=base, success=success, alive=alive, quota=quota, usage=usage, token=token)
 
 
-def account_info(base: str, headers: dict = None, token: str = "", cookie: str = "") -> dict:
+def account_info(
+    base: str, headers: dict = None, token: str = "", cookie: str = "", is_newapi: bool = False, uid: str | int = None
+) -> dict:
     if not headers or not isinstance(headers, dict):
-        headers = get_headers(token=token, cookie=cookie)
+        headers = get_headers(token=token, cookie=cookie, is_newapi=is_newapi, uid=uid)
         if not headers:
             return None
 
@@ -253,11 +251,15 @@ def account_info(base: str, headers: dict = None, token: str = "", cookie: str =
     return data
 
 
-def get_headers(token: str, cookie: str) -> dict:
+def get_headers(token: str, cookie: str, is_newapi: bool = False, uid: str | int = None) -> dict:
     token = utils.trim(token)
     cookie = utils.trim(cookie)
 
     if not token and not cookie:
+        logger.error(f"[ONEAPI] either a token or a cookie must be provided")
+        return None
+    elif is_newapi and not uid and not token:
+        logger.error(f"[ONEAPI] newapi service must specify uid or token")
         return None
 
     headers = {"User-Agent": utils.USER_AGENT, "Content-Type": "application/json"}
@@ -265,6 +267,8 @@ def get_headers(token: str, cookie: str) -> dict:
         headers["Authorization"] = f"Bearer {token}"
     if cookie:
         headers["Cookie"] = cookie
+    if is_newapi and uid:
+        headers["New-Api-User"] = uid
 
     return headers
 
