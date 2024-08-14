@@ -460,17 +460,6 @@ def load(url: str, overlay: bool, sites_file: str = "", material_file: str = "")
     return [utils.extract_domain(url=x, include_protocal=True) for x in sites]
 
 
-def backup_file(filepath: str) -> None:
-    if not filepath or not os.path.exists(filepath) or not os.path.isfile(filepath):
-        return
-
-    newfile = f"{filepath}.bak"
-    if os.path.exists(newfile):
-        os.remove(newfile)
-
-    os.rename(filepath, newfile)
-
-
 def tidy(filepath: str, together: bool = True) -> None:
     filepath = utils.trim(filepath)
     if not filepath or not os.path.exists(filepath) or not os.path.isfile(filepath):
@@ -623,7 +612,7 @@ def collect(params: dict) -> list:
             if is_local():
                 # backup exist files
                 for file in [deployments_file, material_file, candidates_file]:
-                    backup_file(filepath=file)
+                    utils.backup_file(filepath=file)
 
                 if deployments:
                     utils.write_file(deployments_file, deployments, True)
@@ -658,7 +647,7 @@ def collect(params: dict) -> list:
         return list(set(candidates))
 
     # backup sites.txt if file exists
-    backup_file(filepath=sites_file)
+    utils.backup_file(filepath=sites_file)
 
     candidates = list(set(candidates))
     chunk = max(params.get("chunk", 256), 1)

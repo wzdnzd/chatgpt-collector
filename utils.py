@@ -175,6 +175,38 @@ def http_post_noerror(
     return response
 
 
+def read_response(response: HTTPResponse, expected: int = 200, deserialize: bool = False, key: str = "") -> typing.Any:
+    if not response or not isinstance(response, HTTPResponse):
+        return None
+
+    success = expected <= 0 or expected == response.getcode()
+    if not success:
+        return None
+
+    try:
+        text = response.read()
+    except:
+        text = b""
+
+    try:
+        content = text.decode(encoding="UTF8")
+    except UnicodeDecodeError:
+        content = gzip.decompress(text).decode("UTF8")
+    except:
+        content = ""
+
+    if not deserialize:
+        return content
+
+    if not content:
+        return None
+    try:
+        data = json.loads(content)
+        return data if not key else data.get(key, None)
+    except:
+        return None
+
+
 def extract_domain(url: str, include_protocal: bool = True) -> str:
     if not url:
         return ""
@@ -382,3 +414,23 @@ def is_number(num: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def backup_file(filepath: str, with_time: bool = False) -> None:
+    if not filepath or not os.path.exists(filepath) or not os.path.isfile(filepath):
+        return
+
+    if not with_time:
+        newfile = f"{filepath}.bak"
+    else:
+        # get file name and extension
+        words = os.path.splitext(filepath)
+        filename, extension = words[0], words[1]
+
+        current = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        newfile = f"{filename}-{current}{extension}"
+
+    if os.path.exists(newfile):
+        os.remove(newfile)
+
+    os.rename(filepath, newfile)

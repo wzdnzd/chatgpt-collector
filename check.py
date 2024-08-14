@@ -5,16 +5,21 @@
 
 import argparse
 import asyncio
+import errno
 import os
+import time
 import traceback
 from collections import defaultdict
-from datetime import datetime
+from random import choice
+from typing import Iterable
 
 from tqdm import tqdm
 
 import interactive
 import utils
 from logger import logger
+from provider import SUPPORTED_PROVIDERS
+from provider.base import APIStyle, ServiceInfo
 
 
 def read_in_chunks(filepath: str, chunk_size: int = 100):
@@ -96,7 +101,106 @@ def precheck(filepath: str) -> None:
     filepath = utils.trim(filepath)
 
     if not os.path.exists(filepath) or not os.path.isfile(filepath):
-        raise FileNotFoundError(f"[Check] {filepath} was not found or is a directory")
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), filepath)
+
+
+def preprocess(source: str, provider: str, num_threads: int = 0, show_progress: bool = True) -> str:
+    def _preprocess_one(
+        domain: str, token: str = "", username: str = "", password: str = "", email: str = "", **kwargs
+    ) -> ServiceInfo:
+        try:
+            obj = SUPPORTED_PROVIDERS[provider](domain=domain)
+            return obj.get_service(token=token, username=username, password=password, email=email, **kwargs)
+        except:
+            logger.error(f"[Check] failed to fetch service for domain: {domain}")
+            return None
+
+    def _filter_and_concat(candidates: list[ServiceInfo]) -> set[str]:
+        result = set()
+        if candidates and isinstance(candidates, Iterable):
+            for candidate in candidates:
+                if (
+                    not candidate
+                    or not isinstance(candidate, ServiceInfo)
+                    or not candidate.available
+                    or not candidate.api_urls
+                    or not APIStyle.is_standard(candidate.style.name)
+                ):
+                    continue
+
+                for url in candidate.api_urls:
+                    if candidate.api_keys:
+                        url += f"?token={choice(candidate.api_keys)}"
+
+                    result.add(url)
+
+        return result
+
+    provider = utils.trim(provider).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"[Check] unsupported service provider: {provider}")
+
+    source = utils.trim(source)
+
+    if not os.path.exists(source) or not os.path.isfile(source):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), source)
+
+    olds, news = [], []
+    filepath = SUPPORTED_PROVIDERS[provider]._get_default_persist_file()
+
+    if os.path.exists(filepath) and os.path.isfile(filepath):
+        with open(filepath, "r", encoding="utf8") as f:
+            for line in f.readlines():
+                line = utils.trim(line).replace("\n", "")
+                if not line or not (line.startswith("{") and line.endswith("}")):
+                    continue
+
+                try:
+                    service = ServiceInfo.deserialize(content=line)
+                    olds.append([service.domain, service.token, service.username, service.password, service.email])
+                except:
+                    logger.error(f"[Check] failed to deserialize service info: {line}")
+
+    # backup existing file
+    utils.backup_file(filepath=filepath, with_time=True)
+
+    services = utils.multi_thread_run(
+        func=_preprocess_one,
+        tasks=olds,
+        num_threads=num_threads,
+        show_progress=show_progress,
+    )
+
+    records = {} if not services else {x.domain: x for x in services if x}
+    with open(source, "r", encoding="utf8") as f:
+        for line in f.readlines():
+            line = utils.trim(line).replace("\n", "").lower()
+            if not line or line.startswith("#") or line.startswith(";") or line in records:
+                continue
+
+            news.append([line, "", "", "", ""])
+
+    growths = utils.multi_thread_run(
+        func=_preprocess_one,
+        tasks=news,
+        num_threads=num_threads,
+        show_progress=show_progress,
+    )
+
+    final_urls = _filter_and_concat(records.values())
+    final_urls.update(_filter_and_concat(growths))
+    if not final_urls:
+        logger.error(f"[Check] no available service api found for provider: {provider}")
+        return ""
+
+    # generate new source file
+    words = os.path.splitext(source)
+    filename, extension = words[0], words[1]
+    current = time.strftime("%Y%m%d%H%M%S", time.localtime())
+    newfile = f"{filename}-{current}{extension}"
+
+    utils.write_file(filename=newfile, lines=list(final_urls), overwrite=True)
+    return newfile
 
 
 def main(args: argparse.Namespace) -> None:
@@ -107,60 +211,58 @@ def main(args: argparse.Namespace) -> None:
 
     source = os.path.abspath(target)
     model = utils.trim(args.model).lower() or "gpt-3.5-turbo"
-    current = datetime.now().strftime("%Y%m%d%H%M")
+    current = time.strftime("%Y%m%d%H%M%S", time.localtime())
 
     result = utils.trim(args.result)
     if not result:
         result = f"availables-{model}-{current}.txt"
 
+    num_processes, num_threads = args.num, args.thread
     dest = os.path.abspath(os.path.join(os.path.dirname(source), result))
+
+    # generate service api from provider
+    if args.provider:
+        source = preprocess(
+            source=source,
+            provider=args.provider,
+            num_threads=num_threads,
+            show_progress=args.display,
+        )
+        if not source:
+            logger.error(f"[Check] failed to generate service api from provider: {args.provider}")
+            return
 
     # merge dest file content into source file if exist
     if os.path.exists(dest) and os.path.isfile(dest):
-        if not args.newapi:
-            with open(dest, "r", encoding="utf8") as f:
-                lines = [x.strip().lower().replace("\n", "") for x in f.readlines() if x]
-                utils.write_file(filename=source, lines=lines, overwrite=False)
+        with open(dest, "r", encoding="utf8") as f:
+            lines = [x.strip().lower().replace("\n", "") for x in f.readlines() if x]
+            utils.write_file(filename=source, lines=lines, overwrite=False)
 
         if args.overwrite:
-            backup_file = f"{dest}.bak"
-            if os.path.exists(backup_file) and os.path.isfile(backup_file):
-                os.remove(backup_file)
-
-            os.rename(dest, backup_file)
+            utils.backup_file(filepath=dest)
 
     # dedup candidates
     dedup(filepath=source)
 
     potentials = utils.trim(args.latent).lower()
-    num_processes, num_threads = args.process, args.thread
 
     try:
-        if not args.blocked or args.newapi:
+        if not args.blocked:
             with open(source, mode="r", encoding="utf8") as f:
                 sites = [x.replace("\n", "") for x in f.readlines() if x]
-                if args.newapi:
-                    items = [[x, dest] for x in sites]
-                    utils.multi_thread_run(
-                        func=interactive.burst_newapi,
-                        tasks=items,
-                        num_threads=num_threads,
+                asyncio.run(
+                    interactive.check_async(
+                        sites=sites,
+                        filename=dest,
+                        potentials=potentials,
+                        wander=args.wander,
+                        model=model,
+                        concurrency=num_threads,
                         show_progress=args.display,
+                        style=args.style,
+                        headers=args.zany,
                     )
-                else:
-                    asyncio.run(
-                        interactive.check_async(
-                            sites=sites,
-                            filename=dest,
-                            potentials=potentials,
-                            wander=args.wander,
-                            model=model,
-                            concurrency=num_threads,
-                            show_progress=args.display,
-                            style=args.style,
-                            headers=args.zany,
-                        )
-                    )
+                )
 
         else:
             size, total = max(args.chunk, 1), count_lines(source)
@@ -196,8 +298,8 @@ def main(args: argparse.Namespace) -> None:
         dedup(filepath=dest)
 
         logger.info(f"[Check] check finished, avaiable links will be saved to file {dest} if exists")
-    except FileNotFoundError:
-        logger.error(f"[Check] file {source} not exists")
+    except FileNotFoundError as e:
+        logger.error(f"[Check] file {e.filename} not exists")
     except:
         logger.error(f"[Check] batch check error, message:\n{traceback.format_exc()}")
 
@@ -235,11 +337,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-n",
-        "--newapi",
-        dest="newapi",
-        action="store_true",
-        default=False,
-        help="default password detection in NewAPI or OneAPI",
+        "--num",
+        type=int,
+        required=False,
+        default=0,
+        help="number of processes, CPU cores as default",
     )
 
     parser.add_argument(
@@ -280,11 +382,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-p",
-        "--process",
-        type=int,
+        "--provider",
+        type=str,
         required=False,
-        default=0,
-        help="number of processes, CPU cores as default",
+        choices=SUPPORTED_PROVIDERS.keys(),
+        help="service provider to be checked",
     )
 
     parser.add_argument(
