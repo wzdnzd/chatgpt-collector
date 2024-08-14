@@ -177,7 +177,7 @@ class OpenWebUI(ServiceProvider):
             data = json.loads(content)
             return False if not data or not isinstance(data, dict) else self._do_check(data)
         except:
-            logger.error(f"[{self.__class__.__name__}] domain: {self.domain}, load config failed: {content}")
+            logger.error(f"[{self.__class__.__name__}] load config failed, domain: {self.domain}")
             return False
 
     def _do_check(self, data: dict) -> bool:

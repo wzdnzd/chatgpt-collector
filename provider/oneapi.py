@@ -84,6 +84,7 @@ class OneAPI(ServiceProvider):
             email=email,
             token=token,
             available=available,
+            quota=(quota - used_quota) / 500000,
         )
 
     def _login(self, username: str, password: str) -> Account:
@@ -124,6 +125,7 @@ class OneAPI(ServiceProvider):
             token=token,
             cookie=cookie,
             available=available,
+            quota=(quota - used_quota) / 500000,
         )
 
     def __query_exist_apikeys(self, headers: dict, page: int = 0, size: int = 10) -> list[str]:

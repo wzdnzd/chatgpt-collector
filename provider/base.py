@@ -87,6 +87,9 @@ class Account(object):
     # whether account is available
     available: bool = True
 
+    # quota
+    quota: float = -1
+
 
 @dataclass
 class ServiceInfo(Account):
@@ -129,6 +132,7 @@ class ServiceInfo(Account):
             token_type=account.token_type,
             cookie=account.cookie,
             available=account.available,
+            quota=account.quota,
             api_urls=api_urls,
             style=style,
             api_keys=api_keys,
@@ -137,21 +141,23 @@ class ServiceInfo(Account):
         )
 
     def serialize(self) -> str:
-        return json.dumps(
-            {
-                "domain": self.domain,
-                "username": self.username,
-                "password": self.password,
-                "email": self.email,
-                "available": self.available,
-                "token": self.token,
-                "token_type": self.token_type,
-                "api_url": self.api_urls,
-                "style": str(self.style),
-                "api_keys": self.api_keys,
-                "models": [asdict(model) for model in self.models],
-            }
-        )
+        data = {
+            "domain": self.domain,
+            "username": self.username,
+            "password": self.password,
+            "email": self.email,
+            "available": self.available,
+            "token": self.token,
+            "token_type": self.token_type,
+            "api_url": self.api_urls,
+            "style": str(self.style),
+            "api_keys": self.api_keys,
+            "models": [asdict(model) for model in self.models],
+        }
+        if self.quota >= 0:
+            data["quota"] = self.quota
+
+        return json.dumps(data)
 
     @classmethod
     def deserialize(cls, content: str):
@@ -168,6 +174,7 @@ class ServiceInfo(Account):
             style = data.get("style", "openai")
             api_keys = data.get("api_keys", [])
             models = [Model(**model) for model in data.get("models", [])]
+            quota = data.get("quota", -1)
 
             return cls(
                 domain=domain,
@@ -177,6 +184,7 @@ class ServiceInfo(Account):
                 token=token,
                 token_type=token_type,
                 available=available,
+                quota=float(quota) if utils.is_number(quota) else -1,
                 api_urls=api_urls,
                 style=APIStyle.from_str(style),
                 api_keys=api_keys,
