@@ -338,7 +338,9 @@ class ServiceProvider(object):
 
         return models
 
-    def _get_models(self, token: str, token_type: str = "Bearer", cookie: str = "") -> list[Model]:
+    def _get_models(
+        self, token: str, token_type: str = "Bearer", cookie: str = "", endpoints: list[str] = None
+    ) -> list[Model]:
         token = utils.trim(token)
         cookie = utils.trim(cookie)
 

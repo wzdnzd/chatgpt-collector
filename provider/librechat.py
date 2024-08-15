@@ -4,6 +4,7 @@
 # @Time    : 2024-08-13
 
 import json
+from typing import Iterable
 
 import utils
 from logger import logger
@@ -107,6 +108,15 @@ class LibreChat(OpenWebUI):
     def _get_api_keys(self, token: str, token_type: str = "Bearer", cookie: str = "") -> list[str]:
         logger.warning(f"[LibreChat] not support to create api key, domain: {self.domain}")
         return []
+
+    def _get_models(
+        self, token: str, token_type: str = "Bearer", cookie: str = "", endpoints: list[str] = None
+    ) -> list[Model]:
+        models = super()._get_models(token, token_type, cookie, endpoints)
+        if endpoints and isinstance(endpoints, Iterable):
+            models = [model for model in models if model.ownedby in endpoints]
+
+        return models
 
     def _get_available_endpoints(self, headers: dict) -> list[str]:
         if not headers:
