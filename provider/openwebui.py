@@ -22,7 +22,7 @@ class OpenWebUI(ServiceProvider):
         self._register_url = f"{self.domain}/api/v1/auths/signup"
 
     def _register(self, username: str, password: str, email: str, **kwargs) -> Account:
-        password = self._generate_password(password, True)
+        password = self._generate_password(password, punctuation=False)
         email = self._generate_email(email, username)
 
         # check if account already exists

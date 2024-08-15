@@ -108,5 +108,45 @@ class LibreChat(OpenWebUI):
         logger.warning(f"[LibreChat] not support to create api key, domain: {self.domain}")
         return []
 
+    def _get_available_endpoints(self, headers: dict) -> list[str]:
+        if not headers:
+            return []
+
+        url = f"{self.domain}/api/endpoints"
+        content = utils.http_get(url=url, headers=headers, interval=1)
+        try:
+            data = json.loads(content)
+            if not data or not isinstance(data, dict):
+                logger.error(f"[LibreChat] cannot get available endpoints, domain: {self.domain}")
+                return []
+
+            endpoints = list()
+            for k, v in data.items():
+                if not k or not v or not isinstance(v, dict):
+                    continue
+
+                if not v.get("userProvide", True):
+                    endpoints.append(k)
+
+            return endpoints
+        except:
+            logger.error(f"[LibreChat] cannot get available endpoints, domain: {self.domain}")
+            return []
+
     def _do_check(self, data: dict) -> bool:
         return data.get("registrationEnabled", False) and data.get("emailLoginEnabled", False)
+
+    def _get_account(
+        self, token: str = "", username: str = "", password: str = "", email: str = "", **kwargs
+    ) -> Account:
+        account = super()._get_account(token, username, password, email, **kwargs)
+        if account:
+            headers = self._get_headers(token=account.token, cookie=account.cookie)
+            endpoints = self._get_available_endpoints(headers=headers)
+            if not endpoints:
+                logger.error(f"[LibreChat] no available endpoints to use, domain: {self.domain}")
+                account = None
+            else:
+                account.endpoints = endpoints
+
+        return account

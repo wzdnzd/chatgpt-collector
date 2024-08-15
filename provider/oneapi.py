@@ -37,7 +37,7 @@ class OneAPI(ServiceProvider):
             logger.warning(f"[OneAPI] username: root has been used, replace with {username}, domain: {self.domain}")
 
         if len(password) < 8:
-            password = self._generate_password(punctuation=True)
+            password = self._generate_password(punctuation=False)
 
         # TODO: support temporary email to receive activation email and activate account
         payload = {

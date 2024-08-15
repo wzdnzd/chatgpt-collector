@@ -87,6 +87,9 @@ class Account(object):
     # whether account is available
     available: bool = True
 
+    # available endpoints
+    endpoints: list[str] = field(default_factory=list)
+
     # quota
     quota: float = -1
 
@@ -132,6 +135,7 @@ class ServiceInfo(Account):
             token_type=account.token_type,
             cookie=account.cookie,
             available=account.available,
+            endpoints=account.endpoints,
             quota=account.quota,
             api_urls=api_urls,
             style=style,
@@ -140,7 +144,7 @@ class ServiceInfo(Account):
             headers=headers,
         )
 
-    def serialize(self) -> str:
+    def to_dict(self) -> dict:
         data = {
             "domain": self.domain,
             "username": self.username,
@@ -154,10 +158,16 @@ class ServiceInfo(Account):
             "api_keys": self.api_keys,
             "models": [asdict(model) for model in self.models],
         }
+
         if self.quota >= 0:
             data["quota"] = self.quota
+        if self.endpoints:
+            data["endpoints"] = self.endpoints
 
-        return json.dumps(data)
+        return data
+
+    def serialize(self) -> str:
+        return json.dumps(self.to_dict())
 
     @classmethod
     def deserialize(cls, content: str):
@@ -175,6 +185,7 @@ class ServiceInfo(Account):
             api_keys = data.get("api_keys", [])
             models = [Model(**model) for model in data.get("models", [])]
             quota = data.get("quota", -1)
+            endpoints = data.get("endpoints", [])
 
             return cls(
                 domain=domain,
@@ -189,6 +200,7 @@ class ServiceInfo(Account):
                 style=APIStyle.from_str(style),
                 api_keys=api_keys,
                 models=models,
+                endpoints=endpoints,
             )
         except:
             logger.error(f"deserialize service information failed, content: {content}")

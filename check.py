@@ -6,6 +6,7 @@
 import argparse
 import asyncio
 import errno
+import json
 import os
 import time
 import traceback
@@ -200,6 +201,17 @@ def preprocess(
         num_threads=num_threads,
         show_progress=show_progress,
     )
+
+    records.update({item.domain: item for item in growths if item})
+    passes = [x.to_dict() for x in records.values() if x]
+
+    # save service info to file
+    summary = f"{os.path.splitext(filepath)[0]}-summary.json"
+    with open(summary, "w+", encoding="utf8") as f:
+        f.write(json.dumps(passes))
+        f.flush()
+
+        logger.info(f"[Check] saved service information to file: {summary}")
 
     final_urls = _filter_and_concat(records.values())
     final_urls.update(_filter_and_concat(growths))
