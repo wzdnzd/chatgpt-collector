@@ -340,7 +340,7 @@ class ServiceProvider(object):
         content = utils.http_get(url=self._model_api, headers=headers, interval=2)
         try:
             data = json.loads(content)
-            return [] if not data or not isinstance(data, dict) else self._construct_models(data)
+            return [] if not data or not isinstance(data, (dict, list)) else self._construct_models(data)
         except:
             logger.error(f"[{self.__class__.__name__}] cannot list models, domain: {self.domain}")
             return []
@@ -369,12 +369,19 @@ class ServiceProvider(object):
 
         token = account.token
         if api_keys and self._key_as_token():
-            token = choice(api_keys)
+            for key in api_keys:
+                if not key:
+                    continue
 
-        models = self._get_models(token=token, token_type=account.token_type, cookie=account.cookie)
+                models = self._get_models(token=key, token_type=account.token_type, cookie=account.cookie)
+                if models:
+                    token = key
+                    break
+        else:
+            models = self._get_models(token=token, token_type=account.token_type, cookie=account.cookie)
+
         api_url = self._get_api_urls(models=models)
-
-        headers = self._get_headers(token=token, token_type=account.token_type, cookie=account.cookie, **kwargs)
+        headers = self._get_headers(token=token, token_type=account.token_type, cookie=account.cookie)
 
         service = ServiceInfo.new(
             account=account,

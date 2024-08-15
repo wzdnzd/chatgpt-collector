@@ -8,7 +8,7 @@ import json
 
 import utils
 from logger import logger
-from provider.base import Account, ServiceProvider
+from provider.base import Account, Model, ServiceProvider
 
 
 class OneAPI(ServiceProvider):
@@ -200,12 +200,31 @@ class OneAPI(ServiceProvider):
     def _key_as_token(self) -> bool:
         return True
 
+    def _construct_models(self, data: dict | list) -> list[Model]:
+        if isinstance(data, dict):
+            return super()._construct_models(data)
+
+        models = list()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            name = item.get("id", "")
+            ownedby = item.get("owned_by", "")
+            models.append(Model(name=name, ownedby=ownedby))
+
+        return models
+
     def _get_account(
         self, token: str = "", username: str = "", password: str = "", email: str = "", **kwargs
     ) -> Account:
         account = super()._get_account(token, username, password, email, **kwargs)
-        if account and not account.available and account.username != "root":
-            logger.warning(f"[OneAPI] account {account.username} cannot be used, domain: {self.domain}")
+        threshold = kwargs.get("threshold", 0.0)
+
+        if account and (not account.available or account.quota < threshold) and account.username != "root":
+            logger.warning(
+                f"[OneAPI] account {account.username} cannot be used, quota: {account.quota}, domain: {self.domain}"
+            )
             account = None
 
         return account
