@@ -111,7 +111,7 @@ def preprocess(
     threshold: float = 0,
     num_threads: int = 0,
     show_progress: bool = True,
-) -> str:
+) -> tuple[str, int]:
     def _preprocess_one(
         domain: str, token: str = "", username: str = "", password: str = "", email: str = "", **kwargs
     ) -> ServiceInfo:
@@ -204,6 +204,7 @@ def preprocess(
 
     records.update({item.domain: item for item in growths if item})
     passes = [x.to_dict() for x in records.values() if x]
+    style = SUPPORTED_PROVIDERS[provider].api_style().value
 
     # save service info to file
     summary = f"{os.path.splitext(filepath)[0]}-summary.json"
@@ -217,7 +218,7 @@ def preprocess(
     final_urls.update(_filter_and_concat(growths))
     if not final_urls:
         logger.error(f"[Check] no available service api found for provider: {provider}")
-        return ""
+        return "", style
 
     # generate new source file
     words = os.path.splitext(source)
@@ -226,7 +227,7 @@ def preprocess(
     newfile = f"{filename}-{current}{extension}"
 
     utils.write_file(filename=newfile, lines=list(final_urls), overwrite=True)
-    return newfile
+    return newfile, style
 
 
 def main(args: argparse.Namespace) -> None:
@@ -247,9 +248,9 @@ def main(args: argparse.Namespace) -> None:
     dest = os.path.abspath(os.path.join(os.path.dirname(source), result))
 
     # generate service api from provider
-    changed = False
+    changed, style = False, args.style
     if args.provider:
-        source = preprocess(
+        source, style = preprocess(
             source=source,
             provider=args.provider,
             threshold=args.quota,
@@ -289,7 +290,7 @@ def main(args: argparse.Namespace) -> None:
                         model=model,
                         concurrency=num_threads,
                         show_progress=args.display,
-                        style=args.style,
+                        style=style,
                         headers=args.zany,
                     )
                 )
@@ -314,12 +315,12 @@ def main(args: argparse.Namespace) -> None:
                         num_threads=num_threads,
                         show_progress=show,
                         index=0,
-                        style=args.style,
+                        style=style,
                         headers=args.zany,
                     )
             else:
                 tasks = [
-                    [x, dest, potentials, args.wander, model, num_threads, args.display, i + 1, args.style, args.zany]
+                    [x, dest, potentials, args.wander, model, num_threads, args.display, i + 1, style, args.zany]
                     for i, x in enumerate(chunks)
                 ]
                 utils.multi_process_run(func=interactive.check_concurrent, tasks=tasks)

@@ -318,7 +318,8 @@ class ServiceProvider(object):
     def _get_api_keys(self, token: str, token_type: str = "Bearer", cookie: str = "") -> list[str]:
         raise NotImplementedError
 
-    def _get_api_style(self) -> APIStyle:
+    @classmethod
+    def api_style(cls) -> APIStyle:
         return APIStyle.OPENAI
 
     def _construct_models(self, data: dict) -> list[Model]:
@@ -378,7 +379,7 @@ class ServiceProvider(object):
             logger.error(f"[{self.__class__.__name__}] cannot get any account, domain: {self.domain}")
             return None
 
-        style = self._get_api_style()
+        style = self.api_style()
         api_keys = self._get_api_keys(token=account.token, token_type=account.token_type, cookie=account.cookie)
 
         token = account.token

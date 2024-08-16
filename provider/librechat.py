@@ -91,7 +91,7 @@ class LibreChat(OpenWebUI):
 
         return list(urls)
 
-    def _get_api_style(self) -> APIStyle:
+    def api_style(cls) -> APIStyle:
         return APIStyle.OTHER
 
     def _construct_models(self, data: dict) -> list[Model]:

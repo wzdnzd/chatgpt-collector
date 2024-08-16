@@ -201,6 +201,7 @@ class OneAPI(ServiceProvider):
         return True
 
     def _construct_models(self, data: dict | list) -> list[Model]:
+        # TODO: due to the inconsistency between the OneAPI and NewAPI apis, it is necessary to refine the list of available models
         if isinstance(data, dict):
             return super()._construct_models(data)
 
