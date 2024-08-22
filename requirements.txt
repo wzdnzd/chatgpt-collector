@@ -3,3 +3,4 @@ aiohttp
 certifi
 cryptography
 nopecha
+tqdm
