@@ -1,2 +1,2 @@
-# ChatGPT APIs
-> Some ChatGPT APIs Collected From Web
+# ChatGPT Collector
+> Helping you realize the freedom of AIGC API services.

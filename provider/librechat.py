@@ -91,6 +91,7 @@ class LibreChat(OpenWebUI):
 
         return list(urls)
 
+    @classmethod
     def api_style(cls) -> APIStyle:
         return APIStyle.OTHER
 
