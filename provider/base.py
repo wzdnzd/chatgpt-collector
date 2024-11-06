@@ -167,7 +167,7 @@ class ServiceInfo(Account):
         return data
 
     def serialize(self) -> str:
-        return json.dumps(self.to_dict())
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
     def deserialize(cls, content: str):

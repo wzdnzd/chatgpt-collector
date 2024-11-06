@@ -399,7 +399,7 @@ def generate_blacklist(persists: dict, blackconf: dict, pushtool: push.PushTo) -
     url = pushtool.raw_url(persists.get(address))
     content, regex = utils.http_get(url=url), ""
     if content:
-        sites = list(set([x for x in content.split("\n") if not utils.isblank(x) and not x.startswith("#")]))
+        sites = list(set([x.strip() for x in content.split("\n") if not utils.isblank(x) and not x.startswith("#")]))
         regex = "|".join(sites)
 
     return {"persist": address, "auto": autoadd, "regex": regex}
@@ -434,10 +434,18 @@ def intercept(sites: list[str], blacklist: str = "") -> list[str]:
         if not urlvalidator.isurl(site) or (pattern and pattern.search(site)):
             continue
 
-        hostname = parse.urlparse(url=site).netloc
-        url = dataset.get(hostname, "")
-        if not url or len(url) < len(site):
-            dataset[hostname] = site
+        result = parse.urlparse(url=site)
+        hostname, tokens = result.netloc, [""]
+        if result.query:
+            params = {k: v[0] for k, v in parse.parse_qs(result.query).items()}
+            tokens = utils.trim(params.get("token", "")).split(",")
+
+        for token in tokens:
+            # unique key: hostname#@#token if token is not empty else hostname
+            key = hostname if not token else f"{hostname}#@#{token}"
+            url = dataset.get(key, "")
+            if not url or len(url) < len(site):
+                dataset[key] = site
 
     return list(dataset.values())
 

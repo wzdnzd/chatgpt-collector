@@ -31,7 +31,7 @@ async function doSomeTaskOnASchedule() {
 const KV = openAPIs;
 const maxRetries = 3;
 const gpt35Only = (GPT35_ONLY || '').trim().toLowerCase() === 'true';
-const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 async function handleRequest(request) {
     const corsHeaders = {
@@ -116,11 +116,12 @@ async function handleProxy(request) {
     headers.set('User-Agent', userAgent);
 
     let response;
+    let targetURL;
 
     for (let retry = 0; retry < maxRetries; retry++) {
         requestBody.stream = isStreamReq;
 
-        const targetURL = keys.keys[Math.floor(Math.random() * count)].name;
+        targetURL = keys.keys[Math.floor(Math.random() * count)].name;
         const content = (await KV.get(targetURL) || '').trim();
         let accessToken;
 
@@ -306,7 +307,7 @@ async function handleSyncFromRemote() {
     }
 
     // split with comma
-    const targets = content.split(',').filter(s => s.trim() !== '');
+    const targets = mergeMultiTokens(content.split(',').filter(s => s.trim() !== ''));
     if (targets.length <= 0) {
         return new Response(JSON.stringify({
             message: 'Failed to sync due to remote data is empty',
@@ -317,19 +318,14 @@ async function handleSyncFromRemote() {
     const apiPaths = new Set();
     for (const t of targets) {
         try {
-            const url = new URL(t);
-            const apiPath = url.origin + url.pathname;
-            const accessToken = url.searchParams.get("token") || '';
-            const category = (url.searchParams.get("unstable") || '').toLowerCase();
-            const unstable = category === '' || category === 'true';
-            const stream = (url.searchParams.get("stream") || 'true').toLowerCase() === 'true';
-            const defaultModel = url.searchParams.get("model") || '';
+            const result = parseURL(t);
+            if (!result) continue;
 
             // write to kv namespace
-            await KV.put(apiPath, JSON.stringify({ token: accessToken, unstable: unstable, stream: stream, defaultModel: defaultModel }));
-            apiPaths.add(apiPath);
+            await KV.put(result.apiPath, JSON.stringify({ stream: result.stream, defaultModel: result.defaultModel, unstable: result.unstable, token: result.token }));
+            apiPaths.add(result.apiPath);
         } catch {
-            console.warn(`Ignore invalid link: ${t}`);
+            console.warn(`Storage to KV failed, url: ${t}`);
         }
     }
 
@@ -1262,5 +1258,59 @@ async function fetchRemoteLinks(url, headers, retries = 3, delay = 250) {
             console.error('Maximum number of failed retries reached');
             return '';
         }
+    }
+}
+
+function mergeMultiTokens(urls) {
+    if (!Array.isArray(urls) || urls.length === 0) {
+        return [];
+    }
+
+    // merge urls with the same apiPath but different tokens into a single url, with the tokens concatenated by commas
+    const map = new Map();
+    for (const url of urls) {
+        const target = parseURL(url)
+        if (!target) continue;
+
+        if (map.has(target.apiPath)) {
+            const item = map.get(target.apiPath);
+            if (item.token !== target.token) {
+                item.token += ',' + target.token;
+            }
+        } else {
+            map.set(target.apiPath, { token: target.token, stream: target.stream, defaultModel: target.defaultModel, unstable: target.unstable });
+        }
+    }
+
+    const result = [];
+    for (const [apiPath, item] of map.entries()) {
+        const u = new URL(apiPath);
+        u.searchParams.set("token", item.token);
+        u.searchParams.set("unstable", item.unstable.toString());
+        u.searchParams.set("stream", item.stream.toString());
+        u.searchParams.set("model", item.defaultModel);
+        result.push(u.toString());
+    }
+
+    return result;
+}
+
+function parseURL(url) {
+    if (!url || typeof url !== 'string') return {};
+
+    try {
+        const u = new URL(url);
+        const apiPath = u.origin + u.pathname;
+        const token = u.searchParams.get("token") || '';
+        const stream = (u.searchParams.get("stream") || 'true').toLowerCase() === 'true';
+        const defaultModel = u.searchParams.get("model") || '';
+
+        const category = (u.searchParams.get("unstable") || '').toLowerCase();
+        const unstable = category === '' || category === 'true';
+
+        return { apiPath, token, stream, defaultModel, unstable };
+    } catch {
+        console.error(`Ignore invalid link: ${url}`);
+        return {};
     }
 }
