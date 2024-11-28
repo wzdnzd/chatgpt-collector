@@ -115,6 +115,9 @@ async function handleProxy(request) {
     headers.set('Accept', 'application/json, text/event-stream');
     headers.set('User-Agent', userAgent);
 
+    const needRemoveHeaders = ['x-forwarded-for', 'CF-Connecting-IP', 'CF-IPCountry', 'CF-Visitor', 'CF-Ray', 'CF-Worker', 'CF-Device-Type'];
+    needRemoveHeaders.forEach(key => headers.delete(key));
+
     let response;
     let targetURL;
 
@@ -135,8 +138,12 @@ async function handleProxy(request) {
                     requestBody.stream = false;
                 }
 
-                // use default model instead of the request model if default model is set
-                if (data.defaultModel) {
+                const reqModel = requestBody.model;
+                if (data.modelMapping && reqModel in data.modelMapping) {
+                    // replace request model to mapped model
+                    requestBody.model = data.modelMapping[reqModel];
+                } else if (data.defaultModel) {
+                    // use default model instead of the request model if default model is set
                     requestBody.model = data.defaultModel;
                 }
 
@@ -166,8 +173,12 @@ async function handleProxy(request) {
             }
         }
 
-        headers.set('Referer', targetURL + '/');
+        console.log(`Selected proxy url: ${proxyURL}`);
+
+        headers.set('Referer', targetURL);
         headers.set('Origin', targetURL);
+        headers.set('Host', new URL(proxyURL).host);
+        headers.set('X-Real-IP', '8.8.8.8');
 
         // remove old authorization header if exist
         headers.delete('Authorization');
@@ -308,7 +319,7 @@ async function handleSyncFromRemote() {
 
     // split with comma
     const targets = mergeMultiTokens(content.split(',').filter(s => s.trim() !== ''));
-    if (targets.length <= 0) {
+    if (targets.size === 0) {
         return new Response(JSON.stringify({
             message: 'Failed to sync due to remote data is empty',
             success: false
@@ -316,16 +327,15 @@ async function handleSyncFromRemote() {
     }
 
     const apiPaths = new Set();
-    for (const t of targets) {
+    for (const [apiPath, item] of targets.entries()) {
         try {
-            const result = parseURL(t);
-            if (!result) continue;
+            if (!apiPath || !item) continue;
 
             // write to kv namespace
-            await KV.put(result.apiPath, JSON.stringify({ stream: result.stream, defaultModel: result.defaultModel, unstable: result.unstable, token: result.token }));
-            apiPaths.add(result.apiPath);
+            await KV.put(apiPath, JSON.stringify({ stream: item.stream, defaultModel: item.defaultModel, unstable: item.unstable, token: item.token, modelMapping: Object.fromEntries(item.modelMapping) }));
+            apiPaths.add(apiPath);
         } catch {
-            console.warn(`Storage to KV failed, url: ${t}`);
+            console.warn(`Storage to KV failed, url: ${apiPath}, config: ${item}`);
         }
     }
 
@@ -1263,36 +1273,30 @@ async function fetchRemoteLinks(url, headers, retries = 3, delay = 250) {
 
 function mergeMultiTokens(urls) {
     if (!Array.isArray(urls) || urls.length === 0) {
-        return [];
+        return new Map();
     }
 
     // merge urls with the same apiPath but different tokens into a single url, with the tokens concatenated by commas
-    const map = new Map();
+    const records = new Map();
     for (const url of urls) {
         const target = parseURL(url)
         if (!target) continue;
 
-        if (map.has(target.apiPath)) {
-            const item = map.get(target.apiPath);
+        if (records.has(target.apiPath)) {
+            const item = records.get(target.apiPath);
             if (item.token !== target.token) {
                 item.token += ',' + target.token;
             }
+
+            target.forEach((value, key) => {
+                item.modelMapping.set(key, value);
+            });
         } else {
-            map.set(target.apiPath, { token: target.token, stream: target.stream, defaultModel: target.defaultModel, unstable: target.unstable });
+            records.set(target.apiPath, { token: target.token, stream: target.stream, defaultModel: target.defaultModel, unstable: target.unstable, modelMapping: target.modelMapping });
         }
     }
 
-    const result = [];
-    for (const [apiPath, item] of map.entries()) {
-        const u = new URL(apiPath);
-        u.searchParams.set("token", item.token);
-        u.searchParams.set("unstable", item.unstable.toString());
-        u.searchParams.set("stream", item.stream.toString());
-        u.searchParams.set("model", item.defaultModel);
-        result.push(u.toString());
-    }
-
-    return result;
+    return records;
 }
 
 function parseURL(url) {
@@ -1308,9 +1312,36 @@ function parseURL(url) {
         const category = (u.searchParams.get("unstable") || '').toLowerCase();
         const unstable = category === '' || category === 'true';
 
-        return { apiPath, token, stream, defaultModel, unstable };
+        // model mapping, format: old1:new1,old2:new2
+        const modelMapping = parseModelMapping(u.searchParams.get("mapping"));
+
+        return { apiPath, token, stream, defaultModel, unstable, modelMapping };
     } catch {
         console.error(`Ignore invalid link: ${url}`);
         return {};
     }
+}
+
+function parseModelMapping(text) {
+    if (!text || typeof text !== 'string') return new Map();
+
+    const records = new Map();
+    try {
+        text.split(',').forEach(element => {
+            const word = element.trim();
+            if (word.includes(':')) {
+                const [raw, to] = word.split(':');
+                const key = raw.trim().toLowerCase();
+                const value = to.trim().toLowerCase();
+
+                if (key && value) {
+                    records.set(key, value);
+                }
+            }
+        });
+    } catch {
+        console.error(`Ignore invalid model mapping: ${text}`);
+    }
+
+    return records;
 }

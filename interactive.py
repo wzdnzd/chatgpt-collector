@@ -71,6 +71,9 @@ class RequestParams(object):
     # 模型名称
     model: str = "gpt-3.5-turbo"
 
+    # 模型映射
+    mapping: dict = None
+
 
 def get_headers(domain: str, token: str = "", customize_headers: dict = None) -> dict:
     def create_jwt(access_code: str = "") -> str:
@@ -165,7 +168,7 @@ def support_version() -> list[int]:
 
 
 def parse_url(url: str) -> RequestParams:
-    address, stream, version, token, model = "", -1, -1, "", ""
+    address, stream, version, token, model, mapping = "", -1, -1, "", "", None
 
     url = utils.trim(url)
     if url:
@@ -189,10 +192,25 @@ def parse_url(url: str) -> RequestParams:
                 if "model" in params:
                     text = utils.trim(params.get("model"))
                     model = text if text else model
+
+                if "mapping" in params:
+                    text = utils.trim(params.get("mapping"))
+                    words = text.split(",")
+                    mapping = dict()
+
+                    for word in words:
+                        item = utils.trim(word)
+                        if not item or ":" not in item:
+                            continue
+
+                        w1, w2 = item.split(":", maxsplit=1)
+                        old, new = utils.trim(w1), utils.trim(w2)
+                        if old and new:
+                            mapping[old] = new
         except:
             logger.error(f"[Interactive] invalid url: {url}")
 
-    return RequestParams(url=address, stream=stream, version=version, token=token, model=model)
+    return RequestParams(url=address, stream=stream, version=version, token=token, model=model, mapping=mapping)
 
 
 def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[str]:
@@ -500,7 +518,14 @@ def check(
         else:
             version = params.version
 
-    target = concat_url(url=target, stream=stream, version=version, token=params.token, model=params.model)
+    target = concat_url(
+        url=target,
+        stream=stream,
+        version=version,
+        token=params.token,
+        model=params.model,
+        mapping=params.mapping,
+    )
     filename = utils.trim(filename)
 
     if target and filename:
@@ -633,7 +658,14 @@ async def check_async(
                 else:
                     version = params.version
 
-            target = concat_url(url=target, stream=stream, version=version, token=params.token, model=params.model)
+            target = concat_url(
+                url=target,
+                stream=stream,
+                version=version,
+                token=params.token,
+                model=params.model,
+                mapping=params.mapping,
+            )
             if target and filename:
                 directory = os.path.dirname(filename)
                 if not os.path.exists(directory) or not os.path.isdir(directory):
@@ -784,7 +816,7 @@ def not_ternimate(content: str) -> bool:
     return re.search(r'"errorType":(\s+)?401', content, flags=re.I) is not None
 
 
-def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "") -> str:
+def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "", mapping: dict = None) -> str:
     url = utils.trim(url)
     if not url:
         return ""
@@ -800,6 +832,16 @@ def concat_url(url: str, stream: bool, version: int, token: str = "", model: str
     if model:
         target = f"{target}&model={model}"
 
+    records = set()
+    if isinstance(mapping, dict):
+        for key, value in mapping.items():
+            k, v = utils.trim(key), utils.trim(value)
+            if k and v:
+                records.add(f"{k}:{v}")
+
+    if records:
+        text = ",".join(list(records))
+        target += f"mapping={text}"
     return target
 
 
