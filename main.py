@@ -231,12 +231,13 @@ def process(args: argparse.Namespace) -> None:
 
             # strictly conforms to the event-stream standard
             strict = tasks.get("stream", {}).get("strict", True)
-
             data = detect(
                 urls=urls,
                 candidates=candidates,
                 blacklist=blacklist,
-                model=args.model,
+                question=tasks.get("question", ""),
+                keyword=tasks.get("keyword", ""),
+                model=tasks.get("model", args.model),
                 filename=args.filename,
                 run_async=args.run_async,
                 num_threads=args.num,
@@ -469,6 +470,8 @@ def detect(urls: list[str], candidates: dict, blacklist: dict = {}, **kwargs) ->
 
     items = interactive.batch_probe(
         candidates=sites,
+        question=kwargs.get("question", ""),
+        keyword=kwargs.get("keyword", ""),
         model=kwargs.get("model", ""),
         filename=kwargs.get("filename", ""),
         potentials=kwargs.get("potentials", ""),
@@ -476,6 +479,7 @@ def detect(urls: list[str], candidates: dict, blacklist: dict = {}, **kwargs) ->
         run_async=kwargs.get("run_async", True),
         show_progress=kwargs.get("show", False),
         num_threads=kwargs.get("num_threads", 0),
+        strict=kwargs.get("strict", True),
     )
 
     threshold = max(1, kwargs.get("threshold", 7))
@@ -588,7 +592,7 @@ if __name__ == "__main__":
         "--model",
         type=str,
         required=False,
-        default="gpt-3.5-turbo",
+        default="gpt-4o-mini",
         help="model name to chat with",
     )
 

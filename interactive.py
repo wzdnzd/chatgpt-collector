@@ -21,8 +21,11 @@ import utils
 from logger import logger
 from urlvalidator import isurl
 
-# 检测关键词
-KEYWORD = "ChatGPT is"
+# 默认检测关键词
+DEFAULT_KEYWORD = "ChatGPT is"
+
+# 默认问题
+DEFAULT_QUESTION = f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with '{DEFAULT_KEYWORD}'!"
 
 # 默认接口
 DEFAULT_API = "/v1/chat/completions"
@@ -114,8 +117,9 @@ def get_headers(domain: str, token: str = "", customize_headers: dict = None) ->
     return headers
 
 
-def get_payload(model: str, stream: bool = True, style: int = 0) -> dict:
-    question = f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with '{KEYWORD}'!"
+def get_payload(question: str, model: str, stream: bool = True, style: int = 0) -> dict:
+    question = utils.trim(question) or DEFAULT_QUESTION
+
     payload = {
         "model": model or "gpt-3.5-turbo",
         "temperature": 0,
@@ -149,8 +153,12 @@ def get_model_version(model: str, soft: bool = False, opposite: bool = False) ->
     if not model:
         return 0
 
-    if model.startswith("gpt-") or model.startswith("claude-"):
-        return 4 if model.startswith("gpt-4") or model == "claude-3-opus-20240229" else 3
+    if model.startswith("gpt-"):
+        if model == "gpt-4o-mini":
+            return 3
+        return 4 if model.startswith("gpt-4") else 3
+    elif model.startswith("claude-"):
+        return 4 if re.match(r"claude-3-(opus|5-sonnet)-", model) else 3
 
     if soft and re.search(r"-4", model) is not None:
         return 4
@@ -286,6 +294,8 @@ def parse_headers(content: str, delimiter: str = "|") -> dict:
 
 def chat(
     url: str,
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     stream: bool = False,
     token: str = "",
@@ -293,6 +303,7 @@ def chat(
     timeout: int = 6,
     style: int = 0,
     headers: dict = None,
+    strict: bool = True,
 ) -> CheckResult:
     if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
@@ -302,7 +313,7 @@ def chat(
     retry = 3 if retry < 0 else retry
     timeout = 15 if timeout <= 0 else timeout
 
-    payload = get_payload(model=model, stream=stream, style=style)
+    payload = get_payload(question=question, model=model, stream=stream, style=style)
     data = json.dumps(payload).encode(encoding="UTF8")
 
     response, count = None, 0
@@ -361,18 +372,21 @@ def chat(
         content = ""
 
     content_type = response.headers.get("content-type", "")
+    keyword = utils.trim(keyword) or DEFAULT_KEYWORD
     return verify(
         content=content,
         content_type=content_type,
         stream=stream,
         model=model,
-        keyword=KEYWORD,
-        strict=True,
+        keyword=keyword,
+        strict=strict,
     )
 
 
 async def chat_async(
     url: str,
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     stream: bool = False,
     token: str = "",
@@ -381,6 +395,7 @@ async def chat_async(
     interval: float = 3,
     style: int = 0,
     headers: dict = None,
+    strict: bool = True,
 ) -> CheckResult:
     if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
@@ -389,7 +404,7 @@ async def chat_async(
 
     model = model.strip() or "gpt-3.5-turbo"
     customize_headers = get_headers(domain=url, token=token, customize_headers=headers)
-    payload = get_payload(model=model, stream=stream, style=style)
+    payload = get_payload(question=question, model=model, stream=stream, style=style)
     timeout = 6 if timeout <= 0 else timeout
     interval = max(0, interval)
 
@@ -420,6 +435,8 @@ async def chat_async(
                     await asyncio.sleep(interval)
                     return await chat_async(
                         url=url,
+                        question=question,
+                        keyword=keyword,
                         model=model,
                         stream=stream,
                         token=token,
@@ -428,20 +445,35 @@ async def chat_async(
                         interval=interval,
                         style=style,
                         headers=headers,
+                        strict=strict,
                     )
 
                 content_type = response.headers.get("content-type", "")
+                keyword = utils.trim(keyword) or DEFAULT_KEYWORD
                 return verify(
                     content=content,
                     content_type=content_type,
                     stream=stream,
                     model=model,
-                    keyword=KEYWORD,
-                    strict=True,
+                    keyword=keyword,
+                    strict=strict,
                 )
     except:
         await asyncio.sleep(interval)
-        return await chat_async(url, model, stream, token, retry - 1, timeout, interval, style, headers)
+        return await chat_async(
+            url=url,
+            question=question,
+            keyword=keyword,
+            model=model,
+            stream=stream,
+            token=token,
+            retry=retry - 1,
+            timeout=timeout,
+            interval=interval,
+            style=style,
+            headers=headers,
+            strict=strict,
+        )
 
 
 def check(
@@ -449,10 +481,13 @@ def check(
     filename: str = "",
     potentials: str = "",
     wander: bool = False,
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     detect: bool = True,
     style: int = 0,
     headers: dict = None,
+    strict: bool = True,
 ) -> str:
     target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
     stream, version, params, real_model = False, 0, None, ""
@@ -467,12 +502,15 @@ def check(
         # available check
         result = chat(
             url=params.url,
+            question=question,
+            keyword=keyword,
             model=real_model,
             stream=params.stream == 1,
             token=params.token,
             timeout=30,
             style=style,
             headers=headers,
+            strict=strict,
         )
         if result.available:
             target, stream, version = params.url, result.stream, result.version
@@ -492,12 +530,15 @@ def check(
             # stream support check
             result = chat(
                 url=target,
+                question=question,
+                keyword=keyword,
                 model=real_model,
                 stream=True,
                 token=params.token,
                 timeout=30,
                 style=style,
                 headers=headers,
+                strict=strict,
             )
             stream = result.stream or stream
         else:
@@ -507,12 +548,15 @@ def check(
             # version check
             result = chat(
                 url=target,
+                question=question,
+                keyword=keyword,
                 model=get_model_name(provider=real_model, version=4),
                 stream=False,
                 token=params.token,
                 timeout=30,
                 style=style,
                 headers=headers,
+                strict=strict,
             )
             version = result.version if result.available else version
         else:
@@ -539,12 +583,15 @@ def check_concurrent(
     filename: str = "",
     potentials: str = "",
     wander: bool = False,
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     num_threads: int = -1,
     show_progress: bool = False,
     index: int = 0,
     style: int = 0,
     headers: str = "",
+    strict: bool = True,
 ) -> list[str]:
     if not sites or not isinstance(sites, list):
         logger.warning(f"[Interactive] skip process due to lines is empty")
@@ -557,7 +604,11 @@ def check_concurrent(
     # parse customize headers
     customize_headers = parse_headers(content=headers, delimiter="|")
 
-    tasks = [[x, filename, potentials, wander, model, True, style, customize_headers] for x in sites if x]
+    tasks = [
+        [x, filename, potentials, wander, question, keyword, model, True, style, customize_headers, strict]
+        for x in sites
+        if x
+    ]
 
     result = utils.multi_thread_run(
         func=check,
@@ -575,11 +626,14 @@ async def check_async(
     filename: str = "",
     potentials: str = "",
     wander: bool = False,
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     concurrency: int = 512,
     show_progress: bool = True,
     style: int = 0,
     headers: str = "",
+    strict: bool = True,
 ) -> list[str]:
     async def checkone(
         domain: str,
@@ -604,6 +658,8 @@ async def check_async(
                 # available check
                 result = await chat_async(
                     url=params.url,
+                    question=question,
+                    keyword=keyword,
                     model=real_model,
                     stream=params.stream == 1,
                     token=params.token,
@@ -611,6 +667,7 @@ async def check_async(
                     interval=3,
                     style=style,
                     headers=headers,
+                    strict=strict,
                 )
                 if result.available:
                     target, stream, version = params.url, result.stream, result.version
@@ -630,6 +687,8 @@ async def check_async(
                     # stream support check
                     result = await chat_async(
                         url=target,
+                        question=question,
+                        keyword=keyword,
                         model=real_model,
                         stream=True,
                         token=params.token,
@@ -637,6 +696,7 @@ async def check_async(
                         interval=3,
                         style=style,
                         headers=headers,
+                        strict=strict,
                     )
                     stream = result.stream or stream
                 else:
@@ -646,6 +706,8 @@ async def check_async(
                     # version check
                     result = await chat_async(
                         url=url,
+                        question=question,
+                        keyword=keyword,
                         model=get_model_name(provider=real_model, version=4),
                         stream=False,
                         token=params.token,
@@ -653,10 +715,11 @@ async def check_async(
                         interval=3,
                         style=style,
                         headers=headers,
+                        strict=strict,
                     )
                     version = result.version if result.available else version
                 else:
-                    version = params.version
+                    version = params.version if params.version >= 0 else version
 
             target = concat_url(
                 url=target,
@@ -743,6 +806,8 @@ async def check_async(
 
 def batch_probe(
     candidates: list[str],
+    question: str = "",
+    keyword: str = "",
     model: str = "gpt-3.5-turbo",
     filename: str = "",
     potentials: str = "",
@@ -753,8 +818,15 @@ def batch_probe(
     chunk: int = 512,
     style: int = 0,
     headers: str = "",
+    strict: bool = True,
 ) -> list[str]:
     if not candidates or not isinstance(candidates, list):
+        return []
+
+    question = utils.trim(question)
+    keyword = utils.trim(keyword)
+    if (question and not keyword) or (not question and keyword):
+        logger.error("[Interactive] question and keyword must be used together")
         return []
 
     # run as async
@@ -765,11 +837,14 @@ def batch_probe(
                 filename=filename,
                 potentials=potentials,
                 wander=wander,
+                question=question,
+                keyword=keyword,
                 model=model,
                 concurrency=num_threads,
                 show_progress=show_progress,
                 style=style,
                 headers=headers,
+                strict=strict,
             )
         )
     # concurrent check
@@ -779,16 +854,35 @@ def batch_probe(
             filename=filename,
             potentials=potentials,
             wander=wander,
+            question=question,
+            keyword=keyword,
             model=model,
             num_threads=num_threads,
             show_progress=show_progress,
             style=style,
             headers=headers,
+            strict=strict,
         )
     # sharding
     else:
         slices = [candidates[i : i + chunk] for i in range(0, len(candidates), chunk)]
-        tasks = [[x, filename, potentials, wander, model, num_threads, show_progress, style, headers] for x in slices]
+        tasks = [
+            [
+                x,
+                filename,
+                potentials,
+                wander,
+                question,
+                keyword,
+                model,
+                num_threads,
+                show_progress,
+                style,
+                headers,
+                strict,
+            ]
+            for x in slices
+        ]
         results = utils.multi_process_run(func=check_concurrent, tasks=tasks)
         sites = [x for r in results if r for x in r]
 
@@ -821,7 +915,7 @@ def concat_url(url: str, stream: bool, version: int, token: str = "", model: str
     if not url:
         return ""
 
-    version = 3 if version < 0 else version
+    version = 3 if version <= 0 else version
     target = f"{url}?stream={str(stream).lower()}&version={version}"
 
     token = utils.trim(token)
@@ -841,7 +935,7 @@ def concat_url(url: str, stream: bool, version: int, token: str = "", model: str
 
     if records:
         text = ",".join(list(records))
-        target += f"mapping={text}"
+        target += f"&mapping={text}"
     return target
 
 
@@ -850,7 +944,7 @@ def verify(
     content_type: str,
     stream: bool,
     model: str,
-    keyword: str = KEYWORD,
+    keyword: str = DEFAULT_KEYWORD,
     strict: bool = False,
 ) -> CheckResult:
     def extract_message(content: str) -> tuple[bool, str, str]:
@@ -920,20 +1014,22 @@ def verify(
         return CheckResult(available=False)
 
     content_type = utils.trim(content_type)
-    model = utils.trim(model)
-    text, support = content, False
+    req_model = utils.trim(model)
+    text, support, resp_model = content, False, ""
 
     if "text/event-stream" in content_type:
-        support, text, name = support_stream(content=content, strict=strict)
-        model = name or model
+        support, text, resp_model = support_stream(content=content, strict=strict)
     elif "application/json" in content_type or "text/plain" in content_type:
         content = re.sub(r"^```json\n|\n```$", "", text, flags=re.MULTILINE)
-        support, message, name = extract_message(content=content)
+        support, message, resp_model = extract_message(content=content)
         text = message or content
-        model = name or model
 
     available = re.search(keyword, text, flags=re.I) is not None and re.search(r'"error":', text, flags=re.I) is None
-    model = "" if not available else model
+    if available and strict:
+        # set available to false if request model is not equal to response model in strict mode
+        available = req_model == resp_model
+
+    model = "" if not available else (req_model if strict else (resp_model or req_model))
     version = get_model_version(model=model, soft=True, opposite=False)
 
     # adapt old nextweb, content_type is empty but support stream
@@ -942,6 +1038,6 @@ def verify(
     elif not available:
         support = False
 
-    not_exists = no_model(content=content, model=model)
+    not_exists = False if available else (req_model != resp_model if strict else no_model(content=content, model=model))
     terminal = available or not_exists
     return CheckResult(available=available, stream=support, version=version, terminate=terminal, notfound=not_exists)

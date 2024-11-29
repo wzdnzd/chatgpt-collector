@@ -25,12 +25,20 @@ def main(args: argparse.Namespace) -> None:
         logger.error(f"[CMD] repository cannot not be empty")
         return
 
+    question = utils.trim(args.question)
+    keyword = utils.trim(args.keyword)
+    if (question and not keyword) or (not question and keyword):
+        logger.error(f"[CMD] question and keyword must be set together")
+        return
+
     params = {
         "sort": args.sort,
         "refresh": args.generate,
         "checkonly": args.verify,
         "concat": args.concat,
         "overlay": args.overlay,
+        "question": question,
+        "keyword": keyword,
         "model": args.model,
         "num_threads": args.num,
         "skip_check": args.nocheck,
@@ -39,6 +47,7 @@ def main(args: argparse.Namespace) -> None:
         "username": username,
         "repository": repository,
         "wander": args.wander,
+        "strict": not args.easing,
         "potentials": utils.trim(args.latent).lower(),
         "exclude": utils.trim(args.exclude),
         "style": args.template,
@@ -189,11 +198,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-k",
-        "--chunk",
-        type=int,
+        "--keyword",
+        type=str,
         required=False,
-        default=512,
-        help="chunk size of each slice",
+        default="",
+        help="keyword for check answer accuracy, must be set if question is set",
     )
 
     parser.add_argument(
@@ -239,6 +248,15 @@ if __name__ == "__main__":
         required=False,
         default="",
         help="json file for persist config",
+    )
+
+    parser.add_argument(
+        "-q",
+        "--question",
+        type=str,
+        required=False,
+        default="",
+        help="question to ask, must be set if keyword is set",
     )
 
     parser.add_argument(
@@ -293,6 +311,24 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="whether to use common APIs for probing",
+    )
+
+    parser.add_argument(
+        "-x",
+        "--chunk",
+        type=int,
+        required=False,
+        default=512,
+        help="chunk size of each slice",
+    )
+
+    parser.add_argument(
+        "-y",
+        "--easing",
+        dest="easing",
+        action="store_true",
+        default=False,
+        help="whether to use easing mode",
     )
 
     parser.add_argument(

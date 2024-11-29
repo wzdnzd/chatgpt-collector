@@ -654,6 +654,7 @@ def collect(params: dict) -> list:
     model = params.get("model", "") or "gpt-3.5-turbo"
     potentials = params.get("potentials", "")
     wander = params.get("wander", False)
+    strict = params.get("strict", False)
     filename = sites_file if is_local() else ""
 
     logger.info(f"[Pipeline] start to check available, sites: {len(candidates)}, model: {model}")
@@ -661,6 +662,8 @@ def collect(params: dict) -> list:
     # batch check
     sites = interactive.batch_probe(
         candidates=candidates,
+        question=params.get("question", ""),
+        keyword=params.get("keyword", ""),
         model=model,
         filename=filename,
         potentials=potentials,
@@ -671,6 +674,7 @@ def collect(params: dict) -> list:
         chunk=chunk,
         style=style,
         headers=headers,
+        strict=strict,
     )
 
     # deduplication and sort

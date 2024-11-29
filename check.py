@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import errno
 import json
+import keyword
 import os
 import time
 import traceback
@@ -81,7 +82,7 @@ def dedup(filepath: str) -> None:
         if domain:
             if not line.startswith("http://") and not line.startswith("https://"):
                 line = "http://" + line
-                
+
             groups[domain].add(line)
 
     # under the same domain name, give priority to URLs starting with https://
@@ -256,7 +257,7 @@ def main(args: argparse.Namespace) -> None:
         source, style = preprocess(
             source=source,
             provider=args.provider,
-            threshold=args.quota,
+            threshold=args.allocation,
             num_threads=num_threads,
             show_progress=args.display,
         )
@@ -280,6 +281,13 @@ def main(args: argparse.Namespace) -> None:
 
     potentials = utils.trim(args.latent).lower()
 
+    question = utils.trim(args.question)
+    keyword = utils.trim(args.keyword)
+    if (question and not keyword) or (not question and keyword):
+        logger.error(f"[Check] question and keyword must be set together")
+        return
+
+    strict = not args.easing
     try:
         if not args.blocked:
             with open(source, mode="r", encoding="utf8") as f:
@@ -290,11 +298,14 @@ def main(args: argparse.Namespace) -> None:
                         filename=dest,
                         potentials=potentials,
                         wander=args.wander,
+                        question=question,
+                        keyword=keyword,
                         model=model,
                         concurrency=num_threads,
                         show_progress=args.display,
                         style=style,
                         headers=args.zany,
+                        strict=strict,
                     )
                 )
 
@@ -314,12 +325,15 @@ def main(args: argparse.Namespace) -> None:
                         filename=dest,
                         potentials=potentials,
                         wander=args.wander,
+                        question=question,
+                        keyword=keyword,
                         model=model,
                         num_threads=num_threads,
                         show_progress=show,
                         index=0,
                         style=style,
                         headers=args.zany,
+                        strict=strict,
                     )
             else:
                 tasks = [
@@ -346,6 +360,15 @@ if __name__ == "__main__":
     utils.load_dotenv()
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-a",
+        "--allocation",
+        type=float,
+        required=False,
+        default=0.0,
+        help="threshold of the service quota, defaults to 0.0, unit: $",
+    )
+
     parser.add_argument(
         "-b",
         "--blocked",
@@ -374,12 +397,12 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-n",
-        "--num",
-        type=int,
-        required=False,
-        default=0,
-        help="number of processes, CPU cores as default",
+        "-e",
+        "--easing",
+        dest="easing",
+        action="store_true",
+        default=False,
+        help="whether to use easing mode",
     )
 
     parser.add_argument(
@@ -389,6 +412,15 @@ if __name__ == "__main__":
         required=True,
         default="",
         help="name of the file to be checked",
+    )
+
+    parser.add_argument(
+        "-k",
+        "--keyword",
+        type=str,
+        required=False,
+        default="",
+        help="keyword for check answer accuracy, must be set if question is set",
     )
 
     parser.add_argument(
@@ -407,6 +439,15 @@ if __name__ == "__main__":
         required=False,
         default="gpt-3.5-turbo",
         help="model name to chat with",
+    )
+
+    parser.add_argument(
+        "-n",
+        "--num",
+        type=int,
+        required=False,
+        default=0,
+        help="number of processes, CPU cores as default",
     )
 
     parser.add_argument(
@@ -429,11 +470,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-q",
-        "--quota",
-        type=float,
+        "--question",
+        type=str,
         required=False,
-        default=0.0,
-        help="threshold of the service quota, defaults to 0.0, unit: $",
+        default="",
+        help="question to ask, must be set if keyword is set",
     )
 
     parser.add_argument(
