@@ -388,12 +388,22 @@ class ServiceProvider(object):
                 if not key:
                     continue
 
-                models = self._get_models(token=key, token_type=account.token_type, cookie=account.cookie)
+                models = self._get_models(
+                    token=key,
+                    token_type=account.token_type,
+                    cookie=account.cookie,
+                    endpoints=account.endpoints,
+                )
                 if models:
                     token = key
                     break
         else:
-            models = self._get_models(token=token, token_type=account.token_type, cookie=account.cookie)
+            models = self._get_models(
+                token=token,
+                token_type=account.token_type,
+                cookie=account.cookie,
+                endpoints=account.endpoints,
+            )
 
         api_url = self._get_api_urls(models=models)
         headers = self._get_headers(token=token, token_type=account.token_type, cookie=account.cookie)

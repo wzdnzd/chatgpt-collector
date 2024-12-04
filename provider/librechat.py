@@ -133,7 +133,7 @@ class LibreChat(OpenWebUI):
 
             endpoints = list()
             for k, v in data.items():
-                if not k or not v or not isinstance(v, dict):
+                if not k or not v or not isinstance(v, dict) or k == "gptPlugins":
                     continue
 
                 if not v.get("userProvide", True):

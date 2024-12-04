@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from urllib import error, parse, request
 
@@ -79,6 +80,7 @@ class RequestParams(object):
 
 
 def get_headers(domain: str, token: str = "", customize_headers: dict = None) -> dict:
+    # TODO: need new method to generate headers due to this method is deprecated
     def create_jwt(access_code: str = "") -> str:
         """see: https://github.com/lobehub/lobe-chat/blob/main/src/utils/jwt.ts"""
         now = int(time.time())
@@ -88,6 +90,7 @@ def get_headers(domain: str, token: str = "", customize_headers: dict = None) ->
             "endpoint": "",
             "iat": now,
             "exp": now + 100,
+            "userId": str(uuid.uuid4()),
         }
 
         text = base64.b64encode(json.dumps(payload).encode()).decode()
@@ -105,7 +108,10 @@ def get_headers(domain: str, token: str = "", customize_headers: dict = None) ->
     }
 
     token = utils.trim(token)
-    if domain.endswith("/api/chat/openai"):
+
+    # TODO: need enhance detect whether the domain is lobe-chat
+    # model provider see: https://github.com/lobehub/lobe-chat/blob/main/src/libs/agent-runtime/types/type.ts
+    if re.match(r".*/(web)?api/chat/(openai|bedrock)$", domain, flags=re.I):
         # lobe-chat
         headers["X-Lobe-Chat-Auth"] = create_jwt(access_code=token)
     elif token:
