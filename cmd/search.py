@@ -8,6 +8,7 @@ import gzip
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -53,7 +54,7 @@ logging.basicConfig(
 )
 
 
-def search_github(query: str, page: int, session: str) -> str:
+def search_github_web(query: str, session: str, page: int) -> str:
     """use github web search instead of rest api due to it not support regex syntax"""
 
     if page <= 0 or isblank(session) or isblank(query):
@@ -75,13 +76,68 @@ def search_github(query: str, page: int, session: str) -> str:
     return content
 
 
-def search_github_code(query: str, session: str, page: int) -> list[str]:
-    text = trim(query)
-    if not text:
+def search_github_api(query: str, token: str, page: int = 1, peer_page: int = 100) -> list[str]:
+    if isblank(token) or isblank(query):
         return []
 
-    keyword = urllib.parse.quote(text, safe="")
-    content = search_github(query=keyword, page=page, session=session)
+    peer_page, page = min(max(peer_page, 1), 100), max(1, page)
+    url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page={peer_page}&page={page}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    content = http_get(url=url, headers=headers, interval=1)
+    if isblank(content):
+        return []
+    try:
+        items = json.loads(content).get("items", [])
+        links = set()
+
+        for item in items:
+            if not item or type(item) != dict:
+                continue
+
+            link = item.get("html_url", "")
+            if isblank(link):
+                continue
+            links.add(link)
+
+        return list(links)
+    except:
+        return []
+
+
+def get_total_num(query: str, token: str) -> int:
+    if isblank(token) or isblank(query):
+        return 0
+
+    url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=20&page=1"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    content = http_get(url=url, headers=headers, interval=1)
+    try:
+        data = json.loads(content)
+        return data.get("total_count", 0)
+    except:
+        logging.error(f"[GithubCrawl] failed to get total number of items with query: {query}")
+        return 0
+
+
+def search_code(query: str, session: str, page: int, with_api: bool, peer_page: int) -> list[str]:
+    keyword = trim(query)
+    if not keyword:
+        return []
+
+    if with_api:
+        return search_github_api(query=keyword, token=session, page=page, peer_page=peer_page)
+
+    content = search_github_web(query=keyword, session=session, page=page)
     if isblank(content):
         return []
 
@@ -124,7 +180,8 @@ def scan(
     check: typing.Callable,
     filename: str,
     query: str = "",
-    page_num: int = 5,
+    with_api: bool = False,
+    page_num: int = -1,
     num_thread: int = None,
 ) -> None:
     regex, session = trim(regex), trim(session)
@@ -141,14 +198,25 @@ def scan(
         logging.error(f"[Scan] filename cannot be empty")
         return
 
-    if page_num < 0 or page_num > 5:
-        logging.error(f"[Scan] page must greater than 0 and less than 6")
+    query = trim(query) or f"/{regex}/"
+    keyword = urllib.parse.quote(query, safe="")
+    peer_page, count = 100, 5
+
+    if with_api:
+        total = get_total_num(query=keyword, token=session)
+        logging.info(f"[Scan] found {total} items with query: {query}")
+
+        if total > 0:
+            count = math.ceil(total / peer_page)
+
+    page_num = count if page_num < 0 or page_num > count else page_num
+    if page_num <= 0:
+        logging.error(f"[Scan] page number must be greater than 0")
         return
 
-    query = trim(query) or f"/{regex}/"
-    queries = [[query, session, x] for x in range(1, page_num + 1)]
+    queries = [[keyword, session, x, with_api, peer_page] for x in range(1, page_num + 1)]
     candidates = multi_thread_run(
-        func=search_github_code,
+        func=search_code,
         tasks=queries,
         num_threads=num_thread,
     )
@@ -157,7 +225,7 @@ def scan(
         logging.warning(f"[Scan] cannot found any link with query: {query}")
         return
 
-    logging.info(f"start to extract candidates from {len(links)} links")
+    logging.info(f"[Scan] start to extract candidates from {len(links)} links")
 
     tasks = [[x, regex, 3] for x in links if x]
     result = multi_thread_run(func=extract, tasks=tasks, num_threads=num_thread)
@@ -191,7 +259,7 @@ def scan(
         return
 
     items = list(set(records))
-    logging.info(f"start to verify {len(items)} potential keys")
+    logging.info(f"[Scan] start to verify {len(items)} potential keys")
 
     masks = multi_thread_run(func=check, tasks=items, num_threads=num_thread)
     keys = [items[i] for i in range(len(masks)) if masks[i]]
@@ -250,7 +318,7 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
     return data
 
 
-def scan_openai_keys(session: str) -> None:
+def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -261,13 +329,23 @@ def scan_openai_keys(session: str) -> None:
         data = chat(url=url, headers=headers, model="gpt-4o-mini")
         return data is not None
 
+    # TODO: optimize query syntax for github api
+    query = '"OPENAI_API_KEY=sk-"' if with_api else ""
     regex = r"sk-[a-zA-Z0-9]{48}"
     filename = "openai-keys.txt"
 
-    scan(regex=regex, session=session, check=verify, filename=filename)
+    scan(
+        regex=regex,
+        session=session,
+        check=verify,
+        filename=filename,
+        query=query,
+        with_api=with_api,
+        page_num=page_num,
+    )
 
 
-def scan_anthropic_keys(session: str) -> None:
+def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -282,13 +360,22 @@ def scan_anthropic_keys(session: str) -> None:
         data = chat(url=url, headers=headers, model="claude-3-5-sonnet-20241022")
         return data is not None
 
+    query = '"sk-ant-api03-"' if with_api else ""
     regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{86}-[a-zA-Z0-9_]{8}"
     filename = "anthropic-keys.txt"
 
-    scan(regex=regex, session=session, check=verify, filename=filename)
+    scan(
+        regex=regex,
+        session=session,
+        check=verify,
+        filename=filename,
+        query=query,
+        with_api=with_api,
+        page_num=page_num,
+    )
 
 
-def scan_gemini_keys(session: str) -> None:
+def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -302,11 +389,19 @@ def scan_gemini_keys(session: str) -> None:
         data = chat(url=url, headers=headers, params=params)
         return data is not None
 
-    query = "/GEMINI_API_KEY=[a-zA-Z0-9_]{39}/"
+    query = '"GEMINI_API_KEY=AIzaSy"' if with_api else "/GEMINI_API_KEY=[a-zA-Z0-9_]{39}/"
     regex = r"GEMINI_API_KEY=([a-zA-Z0-9_]{39})"
     filename = "gemini-keys.txt"
 
-    scan(regex=regex, session=session, check=verify, filename=filename, query=query)
+    scan(
+        regex=regex,
+        session=session,
+        check=verify,
+        filename=filename,
+        query=query,
+        with_api=with_api,
+        page_num=page_num,
+    )
 
 
 def trim(text: str) -> str:
@@ -493,12 +588,30 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-n",
+        "--num",
+        type=int,
+        required=False,
+        default=-1,
+        help="number of pages to scan. default is -1, mean scan all pages",
+    )
+
+    parser.add_argument(
         "-o",
         "--openai",
         dest="openai",
         action="store_true",
         default=False,
         help="scan openai api keys",
+    )
+
+    parser.add_argument(
+        "-r",
+        "--rest",
+        dest="rest",
+        action="store_true",
+        default=False,
+        help="search code through github rest api",
     )
 
     parser.add_argument(
@@ -512,18 +625,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     session = trim(args.session)
+
     if not session:
         logging.error(f"session cannot be empty")
         exit(1)
 
     if args.all or args.claude:
         logging.info(f"start to scan claude api keys")
-        scan_anthropic_keys(session=session)
+        scan_anthropic_keys(session=session, with_api=args.rest, page_num=args.num)
 
     if args.all or args.gemini:
         logging.info(f"start to scan gemini api keys")
-        scan_gemini_keys(session=session)
+        scan_gemini_keys(session=session, with_api=args.rest, page_num=args.num)
 
     if args.all or args.openai:
         logging.info(f"start to scan openai api keys")
-        scan_openai_keys(session=session)
+        scan_openai_keys(session=session, with_api=args.rest, page_num=args.num)
