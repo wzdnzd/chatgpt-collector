@@ -41,6 +41,11 @@ DEFAULT_HEADERS = {
 
 DEFAULT_QUESTION = f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with 'ChatGPT is'!"
 
+
+# error http status code that do not need to retry
+NO_RETRY_ERROR_CODES = {400, 401, 404, 422}
+
+
 FILE_LOCK = Lock()
 
 
@@ -298,18 +303,18 @@ def scan(
 def chat(url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10) -> dict:
     url, model = trim(url), trim(model)
     if not url:
-        logging.error(f"[Check] url cannot be empty")
+        logging.error(f"[Chat] url cannot be empty")
         return None
 
     if not isinstance(headers, dict):
-        logging.error(f"[Check] headers must be a dict")
+        logging.error(f"[Chat] headers must be a dict")
         return None
     elif len(headers) == 0:
         headers["content-type"] = "application/json"
 
     if not params or not isinstance(params, dict):
         if not model:
-            logging.error(f"[Check] model cannot be empty")
+            logging.error(f"[Chat] model cannot be empty")
             return None
 
         params = {
@@ -330,8 +335,14 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
                 content = response.read()
                 data = json.loads(content)
                 break
+        except urllib.error.HTTPError as e:
+            logging.debug(
+                f"[Chat] failed to request url: {url}, headers: {headers}, status code: {e.code}, message: {e.reason}"
+            )
+            if e.code in NO_RETRY_ERROR_CODES:
+                break
         except Exception:
-            pass
+            logging.debug(f"[Chat] failed to request url: {url}, headers: {headers}, message: {traceback.format_exc()}")
 
         attempt += 1
         time.sleep(1)
@@ -542,16 +553,23 @@ def http_get(
             return ""
 
         return content
+    except urllib.error.HTTPError as e:
+        logging.debug(f"failed to request url: {url}, status code: {e.code}, message: {e.reason}")
+
+        if e.code in NO_RETRY_ERROR_CODES:
+            return ""
     except:
-        time.sleep(interval)
-        return http_get(
-            url=url,
-            headers=headers,
-            params=params,
-            retries=retries - 1,
-            interval=interval,
-            timeout=timeout,
-        )
+        logging.debug(f"failed to request url: {url}, message: {traceback.format_exc()}")
+
+    time.sleep(interval)
+    return http_get(
+        url=url,
+        headers=headers,
+        params=params,
+        retries=retries - 1,
+        interval=interval,
+        timeout=timeout,
+    )
 
 
 def multi_thread_run(func: typing.Callable, tasks: list, num_threads: int = None) -> list:
