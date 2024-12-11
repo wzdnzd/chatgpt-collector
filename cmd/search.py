@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent import futures
+from functools import partial
 from threading import Lock
 
 CTX = ssl.create_default_context()
@@ -237,8 +238,8 @@ def scan(
             urls = search_code(query=keyword, session=session, page=i, with_api=with_api, peer_page=peer_page)
             potentials.update([x for x in urls if x])
 
-            # avoid github rate limit
-            time.sleep(random.randint(3, 10))
+            # avoid github api rate limit: 10RPM
+            time.sleep(random.randint(6, 12))
 
         links = list(potentials)
     if not links:
@@ -338,34 +339,6 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
     return data
 
 
-def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
-    def verify(token: str) -> bool:
-        token = trim(token)
-        if not token:
-            return False
-
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"content-type": "application/json", "authorization": f"Bearer {token}"}
-        data = chat(url=url, headers=headers, model="gpt-4o-mini")
-        return data is not None
-
-    # TODO: optimize query syntax for github api
-    query = '"T3BlbkFJ"' if with_api else ""
-    regex = r"sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
-    filename = "openai-keys.txt"
-
-    scan(
-        regex=regex,
-        session=session,
-        check=verify,
-        filename=filename,
-        query=query,
-        with_api=with_api,
-        page_num=page_num,
-        fast=fast,
-    )
-
-
 def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
@@ -424,6 +397,94 @@ def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1, f
         check=verify,
         filename=filename,
         query=query,
+        with_api=with_api,
+        page_num=page_num,
+        fast=fast,
+    )
+
+
+def scan_openai_like_keys(
+    session: str,
+    query: str,
+    regex: str,
+    filename: str,
+    address: str,
+    model: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+) -> None:
+    def verify(token: str, url: str, model: str) -> bool:
+        token, url, model = trim(token), trim(url), trim(model)
+        if not token or not url or not model:
+            return False
+
+        headers = {"content-type": "application/json", "authorization": f"Bearer {token}"}
+        data = chat(url=url, headers=headers, model=model)
+        return data is not None
+
+    query, regex, filename = trim(query), trim(regex), trim(filename)
+    if not query or not regex or not filename:
+        logging.error(f"[ScanOpenAILike] query, regex, filename cannot be empty")
+        return
+
+    default_address = "https://api.openai.com/v1/chat/completions"
+    address = trim(address) or default_address
+
+    if not re.match(r"^https?:\/\/([\w\-_]+\.[\w\-_]+)+", address):
+        logging.error(f"[ScanOpenAILike] base_url must be a valid url")
+        return
+
+    model = trim(model)
+    if not model:
+        if address == default_address:
+            model = "gpt-4o-mini"
+        else:
+            logging.error(f"[ScanOpenAILike] model cannot be empty")
+            return
+
+    check = partial(verify, url=address, model=model)
+    scan(
+        regex=regex,
+        session=session,
+        check=check,
+        filename=filename,
+        query=query,
+        with_api=with_api,
+        page_num=page_num,
+        fast=fast,
+    )
+
+
+def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
+    # TODO: optimize query syntax for github api
+    query = '"T3BlbkFJ"' if with_api else ""
+    regex = r"sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+
+    return scan_openai_like_keys(
+        session=session,
+        query=query,
+        regex=regex,
+        filename="openai-keys.txt",
+        address="https://api.openai.com/v1/chat/completions",
+        model="gpt-4o-mini",
+        with_api=with_api,
+        page_num=page_num,
+        fast=fast,
+    )
+
+
+def scan_groq_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
+    query = '"WGdyb3FY"' if with_api else ""
+    regex = r"gsk_[a-zA-Z0-9]{20}WGdyb3FY[a-zA-Z0-9]{24}"
+
+    return scan_openai_like_keys(
+        session=session,
+        query=query,
+        regex=regex,
+        filename="groq-keys.txt",
+        address="https://api.groq.com/openai/v1/chat/completions",
+        model="llama3-8b-8192",
         with_api=with_api,
         page_num=page_num,
         fast=fast,
@@ -610,6 +671,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-l",
+        "--llama",
+        dest="llama",
+        action="store_true",
+        default=False,
+        help="scan groq api keys",
+    )
+
+    parser.add_argument(
         "-n",
         "--num",
         type=int,
@@ -659,6 +729,10 @@ if __name__ == "__main__":
     if args.all or args.gemini:
         logging.info(f"start to scan gemini api keys")
         scan_gemini_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
+
+    if args.all or args.llama:
+        logging.info(f"start to scan groq api keys")
+        scan_groq_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
 
     if args.all or args.openai:
         logging.info(f"start to scan openai api keys")
