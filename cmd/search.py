@@ -10,8 +10,8 @@ import json
 import logging
 import math
 import os
+import random
 import re
-import socket
 import ssl
 import time
 import traceback
@@ -77,6 +77,7 @@ def search_github_web(query: str, session: str, page: int) -> str:
 
 
 def search_github_api(query: str, token: str, page: int = 1, peer_page: int = 100) -> list[str]:
+    """rate limit: 10RPM"""
     if isblank(token) or isblank(query):
         return []
 
@@ -88,7 +89,7 @@ def search_github_api(query: str, token: str, page: int = 1, peer_page: int = 10
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    content = http_get(url=url, headers=headers, interval=1)
+    content = http_get(url=url, headers=headers, interval=2, timeout=30)
     if isblank(content):
         return []
     try:
@@ -183,6 +184,7 @@ def scan(
     with_api: bool = False,
     page_num: int = -1,
     num_thread: int = None,
+    fast: bool = False,
 ) -> None:
     regex, session = trim(regex), trim(session)
     if not regex or not session:
@@ -209,18 +211,36 @@ def scan(
         if total > 0:
             count = math.ceil(total / peer_page)
 
-    page_num = count if page_num < 0 or page_num > count else page_num
+    # see: https://stackoverflow.com/questions/37602893/github-search-limit-results
+    # the search api will return up to 1000 results per query (including pagination, peer_page: 100)
+    # and web search is limited to 5 pages
+    # so maxmum page num is 10
+    page_num = min(count if page_num < 0 or page_num > count else page_num, 10)
     if page_num <= 0:
         logging.error(f"[Scan] page number must be greater than 0")
         return
 
-    queries = [[keyword, session, x, with_api, peer_page] for x in range(1, page_num + 1)]
-    candidates = multi_thread_run(
-        func=search_code,
-        tasks=queries,
-        num_threads=num_thread,
-    )
-    links = list(set(itertools.chain.from_iterable(candidates)))
+    links = None
+    if fast:
+        # concurrent requests are easy to fail but faster
+        queries = [[keyword, session, x, with_api, peer_page] for x in range(1, page_num + 1)]
+        candidates = multi_thread_run(
+            func=search_code,
+            tasks=queries,
+            num_threads=num_thread,
+        )
+        links = list(set(itertools.chain.from_iterable(candidates)))
+    else:
+        # sequential requests are more stable but slower
+        potentials = set()
+        for i in range(1, page_num + 1):
+            urls = search_code(query=keyword, session=session, page=i, with_api=with_api, peer_page=peer_page)
+            potentials.update([x for x in urls if x])
+
+            # avoid github rate limit
+            time.sleep(random.randint(3, 10))
+
+        links = list(potentials)
     if not links:
         logging.warning(f"[Scan] cannot found any link with query: {query}")
         return
@@ -318,7 +338,7 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
     return data
 
 
-def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
+def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -330,8 +350,8 @@ def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1) -
         return data is not None
 
     # TODO: optimize query syntax for github api
-    query = '"OPENAI_API_KEY=sk-"' if with_api else ""
-    regex = r"sk-[a-zA-Z0-9]{48}"
+    query = '"T3BlbkFJ"' if with_api else ""
+    regex = r"sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
     filename = "openai-keys.txt"
 
     scan(
@@ -342,10 +362,11 @@ def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1) -
         query=query,
         with_api=with_api,
         page_num=page_num,
+        fast=fast,
     )
 
 
-def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
+def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -361,7 +382,7 @@ def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1
         return data is not None
 
     query = '"sk-ant-api03-"' if with_api else ""
-    regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{86}-[a-zA-Z0-9_]{8}"
+    regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{93}AA"
     filename = "anthropic-keys.txt"
 
     scan(
@@ -372,10 +393,11 @@ def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1
         query=query,
         with_api=with_api,
         page_num=page_num,
+        fast=fast,
     )
 
 
-def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1) -> None:
+def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
     def verify(token: str) -> bool:
         token = trim(token)
         if not token:
@@ -389,8 +411,11 @@ def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1) -
         data = chat(url=url, headers=headers, params=params)
         return data is not None
 
-    query = '"GEMINI_API_KEY=AIzaSy"' if with_api else "/GEMINI_API_KEY=[a-zA-Z0-9_]{39}/"
-    regex = r"GEMINI_API_KEY=([a-zA-Z0-9_]{39})"
+    query = '/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
+    if with_api:
+        query = '"AIzaSy" AND "gemini"'
+
+    regex = r"AIzaSy[a-zA-Z0-9_\-]{33}"
     filename = "gemini-keys.txt"
 
     scan(
@@ -401,6 +426,7 @@ def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1) -
         query=query,
         with_api=with_api,
         page_num=page_num,
+        fast=fast,
     )
 
 
@@ -455,20 +481,7 @@ def http_get(
             return ""
 
         return content
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, (socket.timeout, ssl.SSLError)):
-            time.sleep(interval)
-            return http_get(
-                url=url,
-                headers=headers,
-                params=params,
-                retries=retries - 1,
-                interval=interval,
-                timeout=timeout,
-            )
-        else:
-            return ""
-    except Exception as e:
+    except:
         time.sleep(interval)
         return http_get(
             url=url,
@@ -579,6 +592,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-f",
+        "--fast",
+        dest="fast",
+        action="store_true",
+        default=False,
+        help="concurrent request github rest api to search code for speed up but easy to fail",
+    )
+
+    parser.add_argument(
         "-g",
         "--gemini",
         dest="gemini",
@@ -632,12 +654,12 @@ if __name__ == "__main__":
 
     if args.all or args.claude:
         logging.info(f"start to scan claude api keys")
-        scan_anthropic_keys(session=session, with_api=args.rest, page_num=args.num)
+        scan_anthropic_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
 
     if args.all or args.gemini:
         logging.info(f"start to scan gemini api keys")
-        scan_gemini_keys(session=session, with_api=args.rest, page_num=args.num)
+        scan_gemini_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
 
     if args.all or args.openai:
         logging.info(f"start to scan openai api keys")
-        scan_openai_keys(session=session, with_api=args.rest, page_num=args.num)
+        scan_openai_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
