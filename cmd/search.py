@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent import futures
-from functools import partial
+from dataclasses import dataclass, field
 from threading import Lock
 
 CTX = ssl.create_default_context()
@@ -39,7 +39,7 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 }
 
-DEFAULT_QUESTION = f"Tell me what ChatGPT is in English, your answer should contain a maximum of 20 words and must start with 'ChatGPT is'!"
+DEFAULT_QUESTION = "Hello"
 
 
 # error http status code that do not need to retry
@@ -53,11 +53,261 @@ PATH = os.path.abspath(os.path.dirname(__file__))
 
 
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s %(filename)s [line:%(lineno)d] %(levelname)s: %(message)s",
     level=logging.INFO,
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.FileHandler(os.path.join(PATH, "search.log")), logging.StreamHandler()],
 )
+
+
+@dataclass
+class KeyDetail(object):
+    # token
+    key: str
+
+    # models that the key can access
+    models: list[str] = field(default_factory=list)
+
+    def __hash__(self):
+        return hash(self.key)
+
+    def __eq__(self, other):
+        if not isinstance(other, KeyDetail):
+            return False
+
+        return self.key == other.key
+
+
+@dataclass
+class Condition(object):
+    # pattern for extract key from code
+    regex: str
+
+    # search keyword or pattern
+    query: str = ""
+
+    def __hash__(self):
+        return hash((self.query, self.regex))
+
+    def __eq__(self, other):
+        if not isinstance(other, Condition):
+            return False
+
+        return self.query == other.query and self.regex == other.regex
+
+
+class Provider(object):
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        completion_path: str,
+        model_path: str,
+        default_model: str,
+        conditions: Condition | list[Condition],
+        **kwargs,
+    ):
+        name = str(name)
+        if not name:
+            raise ValueError("provider name cannot be empty")
+
+        default_model = trim(default_model)
+        if not default_model:
+            raise ValueError("default_model cannot be empty")
+
+        base_url = trim(base_url)
+        if not re.match(r"^https?:\/\/([\w\-_]+\.[\w\-_]+)+", base_url):
+            raise ValueError("base_url must be a valid url")
+
+        # see: https://stackoverflow.com/questions/10893374/python-confusions-with-urljoin
+        if not base_url.endswith("/"):
+            base_url += "/"
+
+        filename = name.replace(" ", "-").lower()
+
+        # provider name
+        self.name = name
+
+        # filename for keys
+        self.keys_filename = f"{filename}-keys.txt"
+
+        # filename for extract keys
+        self.material_filename = f"{filename}-material.txt"
+
+        # filename for summary
+        self.summary_filename = f"{filename}-summary.json"
+
+        # base url for llm service api
+        self.base_url = base_url
+
+        # path for completion api
+        self.completion_path = trim(completion_path).removeprefix("/")
+
+        # path for model list api
+        self.model_path = trim(model_path).removeprefix("/")
+
+        # default model for completion api used to verify token
+        self.default_model = default_model
+
+        conditions = (
+            [conditions]
+            if isinstance(conditions, Condition)
+            else ([] if not isinstance(conditions, list) else conditions)
+        )
+
+        items = set()
+        for condition in conditions:
+            if not isinstance(condition, Condition) or not condition.regex:
+                logging.warning(f"invalid condition: {condition}, skip it")
+                continue
+
+            items.add(condition)
+
+        # search and extract keys conditions
+        self.conditions = list(items)
+
+        # additional parameters for provider
+        self.extras = kwargs
+
+    def _get_headers(self, token: str) -> dict:
+        raise NotImplementedError
+
+    def check(self, token):
+        url = urllib.parse.urljoin(self.base_url, self.completion_path)
+        headers = self._get_headers(token=token)
+        if not headers:
+            return False
+
+        data = chat(url=url, headers=headers, model=self.default_model)
+        return data is not None
+
+    def list_models(self, token) -> list[str]:
+        raise NotImplementedError
+
+
+class OpenAILikeProvider(Provider):
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        default_model: str,
+        conditions: list[Condition],
+        completion_path: str = "/v1/chat/completions",
+        model_path: str = "/v1/models",
+        **kwargs,
+    ):
+        super().__init__(name, base_url, completion_path, model_path, default_model, conditions, **kwargs)
+
+    def _get_headers(self, token):
+        token = trim(token)
+        if not token:
+            return None
+
+        return {"content-type": "application/json", "authorization": f"Bearer {token}"}
+
+    def list_models(self, token):
+        headers = self._get_headers(token=token)
+        if not headers or not self.model_path:
+            return []
+
+        url = urllib.parse.urljoin(self.base_url, self.model_path)
+        content = http_get(url=url, headers=headers, interval=1)
+        if not content:
+            return []
+
+        try:
+            result = json.loads(content)
+            return [x.get("id", "") for x in result.get("data", [])]
+        except:
+            logging.error(f"failed to parse models from response: {content}")
+            return []
+
+
+class OpenAIProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "gpt-4o-mini"
+        base_url = "https://api.openai.com"
+
+        super().__init__("openai", base_url, default_model, conditions)
+
+
+class GroqProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "llama3-8b-8192"
+        base_url = "https://api.groq.com/openai"
+
+        super().__init__("groq", base_url, default_model, conditions)
+
+
+class AnthropicProvider(Provider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "claude-3-5-sonnet-latest"
+        super().__init__("anthropic", "https://api.anthropic.com", "/v1/messages", "", default_model, conditions)
+
+    def _get_headers(self, token):
+        token = trim(token)
+        if not token:
+            return None
+
+        return {"content-type": "application/json", "x-api-key": token, "anthropic-version": "2023-06-01"}
+
+    def list_models(self, token):
+        token = trim(token)
+        if not token:
+            return []
+
+        # see: https://docs.anthropic.com/en/docs/about-claude/models
+        return [
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
+            "claude-3-opus-latest",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307",
+            "claude-2.1",
+            "claude-2.0",
+            "claude-instant-1.2",
+        ]
+
+
+class GeminiProvider(Provider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "gemini-exp-1206"
+        base_url = "https://generativelanguage.googleapis.com"
+        sub_path = "/v1beta/models"
+
+        super().__init__("gemini", base_url, sub_path, sub_path, default_model, conditions)
+
+    def _get_headers(self, token):
+        return {"content-type": "application/json"}
+
+    def check(self, token):
+        token = trim(token)
+        if not token:
+            return False
+
+        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{self.default_model}:generateContent?key={token}"
+        params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
+
+        data = chat(url=url, headers=self._get_headers(token=token), params=params)
+        return data is not None
+
+    def list_models(self, token):
+        token = trim(token)
+        if not token:
+            return []
+
+        url = urllib.parse.urljoin(self.base_url, self.model_path) + f"?key={token}"
+        content = http_get(url=url, headers=self._get_headers(token=token), interval=1)
+        if not content:
+            return []
+
+        try:
+            data = json.loads(content)
+            models = data.get("models", [])
+            return [x.get("name", "").removeprefix("models/") for x in models]
+        except:
+            logging.error(f"failed to parse models from response: {content}")
+            return []
 
 
 def search_github_web(query: str, session: str, page: int) -> str:
@@ -182,29 +432,140 @@ def extract(url: str, regex: str, retries: int = 3) -> list[str]:
 
 
 def scan(
+    session: str,
+    provider: Provider,
+    with_api: bool = False,
+    page_num: int = -1,
+    thread_num: int = None,
+    fast: bool = False,
+    skip: bool = False,
+) -> None:
+    def load_exist_keys(filepath: str) -> str:
+        filepath = trim(filepath)
+        if not filepath:
+            logging.error(f"[Scan] filepath cannot be empty")
+            return []
+
+        if not os.path.exists(filepath) or not os.path.isfile(filepath):
+            logging.error(f"[Scan] file not found: {filepath}")
+            return []
+
+        lines = list()
+        with open(filepath, "r", encoding="utf8") as f:
+            for line in f.readlines():
+                text = trim(line)
+                if not text or text.startswith(";") or text.startswith("#"):
+                    continue
+
+                lines.append(text)
+
+        return lines
+
+    if not isinstance(provider, Provider):
+        return
+
+    keys_filename = trim(provider.keys_filename)
+    if not keys_filename:
+        logging.error(f"[Scan] {provider.name}: keys filename cannot be empty")
+        return
+
+    records = set()
+    filepath = os.path.join(PATH, keys_filename)
+    material = os.path.join(PATH, provider.material_filename)
+
+    if os.path.exists(filepath) and os.path.isfile(filepath):
+        # load exists valid keys
+        records.update(load_exist_keys(filepath=filepath))
+        logging.info(f"[Scan] {provider.name}: loaded {len(records)} exists keys from file {filepath}")
+
+        # backup up exists file with current time
+        words = keys_filename.rsplit(".", maxsplit=1)
+        keys_filename = f"{words[0]}-{time.strftime('%Y%m%d%H%M%S', time.localtime())}"
+        if len(words) > 1:
+            keys_filename += f".{words[1]}"
+
+        os.rename(filepath, os.path.join(PATH, keys_filename))
+
+    if os.path.exists(material) and os.path.isfile(material):
+        # load potential keys from material file
+        records.update(load_exist_keys(filepath=material))
+
+    if not skip and provider.conditions:
+        new_keys, start_time = set(), time.time()
+        for condition in provider.conditions:
+            if not isinstance(condition, Condition):
+                continue
+
+            query, regex = condition.query, condition.regex
+            logging.info(f"[Scan] {provider.name}: start to search new keys with query: {query}, regex: {regex}")
+
+            candidates = recall(
+                regex=regex,
+                session=session,
+                query=query,
+                with_api=with_api,
+                page_num=page_num,
+                thread_num=thread_num,
+                fast=fast,
+            )
+
+            if candidates:
+                new_keys.update(candidates)
+
+        # merge new keys with exists keys
+        records.update(new_keys)
+
+        cost = time.time() - start_time
+        count, total = len(provider.conditions), len(new_keys)
+        logging.info(f"[Scan] {provider.name}: cost {cost:.2f}s to search {count} conditions, got {total} new keys")
+
+    if not records:
+        logging.warning(f"[Scan] {provider.name}: cannot extract any candidate with conditions: {provider.conditions}")
+        return
+
+    items = list(records)
+
+    # save all potential keys to material file
+    if not write_file(directory=material, lines=items):
+        logging.error(f"[Scan] {provider.name}: failed to save potential keys to file: {material}, keys: {items}")
+
+    logging.info(f"[Scan] {provider.name}: start to verify {len(items)} potential keys")
+
+    masks = multi_thread_run(func=provider.check, tasks=items, thread_num=thread_num)
+    keys = [items[i] for i in range(len(masks)) if masks[i]]
+
+    if not keys:
+        logging.warning(f"[Scan] {provider.name}: cannot found any key with conditions: {provider.conditions}")
+    else:
+        if not write_file(directory=filepath, lines=keys):
+            logging.error(f"[Scan] {provider.name}: failed to save keys to file: {filepath}, keys: {keys}")
+        else:
+            logging.info(f"[Scan] {provider.name}: found {len(keys)} valid keys, save them to file: {filepath}")
+
+        # list supported models for each key
+        models = multi_thread_run(func=provider.list_models, tasks=keys, thread_num=thread_num)
+        data = {keys[i]: models[i] or [] for i in range(len(keys))}
+        summary_path = os.path.join(PATH, provider.summary_filename)
+
+        if write_file(directory=summary_path, lines=json.dumps(data, ensure_ascii=False, indent=4)):
+            logging.info(f"[Scan] {provider.name}: saved {len(keys)} keys summary to file: {summary_path}")
+        else:
+            logging.error(f"[Scan] {provider.name}: failed to save keys summary to file: {summary_path}, data: {data}")
+
+
+def recall(
     regex: str,
     session: str,
-    check: typing.Callable,
-    filename: str,
     query: str = "",
     with_api: bool = False,
     page_num: int = -1,
-    num_thread: int = None,
+    thread_num: int = None,
     fast: bool = False,
-) -> None:
+) -> list[str]:
     regex, session = trim(regex), trim(session)
     if not regex or not session:
-        logging.error(f"[Scan] skip to scan due to regex or session is empty")
-        return
-
-    if not isinstance(check, typing.Callable):
-        logging.error(f"[Scan] check must be a callable function")
-        return
-
-    filename = trim(filename)
-    if not filename:
-        logging.error(f"[Scan] filename cannot be empty")
-        return
+        logging.error(f"[Search] skip to scan due to regex or session is empty")
+        return []
 
     query = trim(query) or f"/{regex}/"
     keyword = urllib.parse.quote(query, safe="")
@@ -212,7 +573,7 @@ def scan(
 
     if with_api:
         total = get_total_num(query=keyword, token=session)
-        logging.info(f"[Scan] found {total} items with query: {query}")
+        logging.info(f"[Search] found {total} items with query: {query}")
 
         if total > 0:
             count = math.ceil(total / peer_page)
@@ -223,8 +584,8 @@ def scan(
     # so maxmum page num is 10
     page_num = min(count if page_num < 0 or page_num > count else page_num, 10)
     if page_num <= 0:
-        logging.error(f"[Scan] page number must be greater than 0")
-        return
+        logging.error(f"[Search] page number must be greater than 0")
+        return []
 
     links = None
     if fast:
@@ -233,7 +594,7 @@ def scan(
         candidates = multi_thread_run(
             func=search_code,
             tasks=queries,
-            num_threads=num_thread,
+            thread_num=thread_num,
         )
         links = list(set(itertools.chain.from_iterable(candidates)))
     else:
@@ -248,56 +609,15 @@ def scan(
 
         links = list(potentials)
     if not links:
-        logging.warning(f"[Scan] cannot found any link with query: {query}")
-        return
+        logging.warning(f"[Search] cannot found any link with query: {query}")
+        return []
 
-    logging.info(f"[Scan] start to extract candidates from {len(links)} links")
+    logging.info(f"[Search] start to extract candidates from {len(links)} links")
 
     tasks = [[x, regex, 3] for x in links if x]
-    result = multi_thread_run(func=extract, tasks=tasks, num_threads=num_thread)
+    result = multi_thread_run(func=extract, tasks=tasks, thread_num=thread_num)
 
-    records = list()
-    filepath = os.path.join(PATH, filename)
-    if os.path.exists(filepath) and os.path.isfile(filepath):
-        # load exists keys
-        with open(filepath, "r", encoding="utf8") as f:
-            lines = f.readlines()
-            for line in lines:
-                text = trim(line)
-                if not text or text.startswith(";") or text.startswith("#"):
-                    continue
-
-                records.append(text)
-
-        logging.info(f"[Scan] loaded {len(records)} exists keys from file {filepath}")
-
-        # backup up exists file with current time
-        words = filename.rsplit(".", maxsplit=1)
-        filename = f"{words[0]}-{time.strftime('%Y%m%d%H%M%S', time.localtime())}"
-        if len(words) > 1:
-            filename += f".{words[1]}"
-
-        os.rename(filepath, os.path.join(PATH, filename))
-
-    records.extend(list(itertools.chain.from_iterable(result)))
-    if not records:
-        logging.warning(f"[Scan] cannot extract any candidate with query: {query}")
-        return
-
-    items = list(set(records))
-    logging.info(f"[Scan] start to verify {len(items)} potential keys")
-
-    masks = multi_thread_run(func=check, tasks=items, num_threads=num_thread)
-    keys = [items[i] for i in range(len(masks)) if masks[i]]
-
-    if not keys:
-        logging.warning(f"[Scan] finished, cannot found any key with query: {query}")
-    else:
-        saved = write_file(directory=filepath, lines=keys)
-        if not saved:
-            logging.error(f"[Scan] failed to save keys to file: {filepath}, keys: {keys}")
-
-        logging.info(f"[Scan] finished, found {len(keys)} valid keys, save them to file: {filepath}")
+    return list(itertools.chain.from_iterable(result))
 
 
 def chat(url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10) -> dict:
@@ -336,13 +656,14 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
                 data = json.loads(content)
                 break
         except urllib.error.HTTPError as e:
-            logging.debug(
-                f"[Chat] failed to request url: {url}, headers: {headers}, status code: {e.code}, message: {e.reason}"
-            )
+            if e.code != 401:
+                logging.error(
+                    f"[Chat] failed to request url: {url}, headers: {headers}, status code: {e.code}, message: {e.reason}"
+                )
             if e.code in NO_RETRY_ERROR_CODES:
                 break
         except Exception:
-            logging.debug(f"[Chat] failed to request url: {url}, headers: {headers}, message: {traceback.format_exc()}")
+            logging.error(f"[Chat] failed to request url: {url}, headers: {headers}, message: {traceback.format_exc()}")
 
         attempt += 1
         time.sleep(1)
@@ -350,155 +671,109 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
     return data
 
 
-def scan_anthropic_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
-    def verify(token: str) -> bool:
-        token = trim(token)
-        if not token:
-            return False
-
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "content-type": "application/json",
-            "x-api-key": token,
-            "anthropic-version": "2023-06-01",
-        }
-        data = chat(url=url, headers=headers, model="claude-3-5-sonnet-20241022")
-        return data is not None
-
+def scan_anthropic_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+) -> None:
     query = '"sk-ant-api03-"' if with_api else ""
     regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{93}AA"
-    filename = "anthropic-keys.txt"
 
-    scan(
-        regex=regex,
+    conditions = [Condition(query=query, regex=regex)]
+    default_model = "claude-3-5-sonnet-latest"
+    provider = AnthropicProvider(conditions=conditions, default_model=default_model)
+
+    return scan(
         session=session,
-        check=verify,
-        filename=filename,
-        query=query,
+        provider=provider,
         with_api=with_api,
         page_num=page_num,
+        thread_num=thread_num,
         fast=fast,
+        skip=skip,
     )
 
 
-def scan_gemini_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
-    def verify(token: str) -> bool:
-        token = trim(token)
-        if not token:
-            return False
-
-        model = "gemini-exp-1206"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={token}"
-        headers = {"content-type": "application/json"}
-        params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
-
-        data = chat(url=url, headers=headers, params=params)
-        return data is not None
-
+def scan_gemini_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+) -> None:
     query = '/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
     if with_api:
         query = '"AIzaSy" AND "gemini"'
 
     regex = r"AIzaSy[a-zA-Z0-9_\-]{33}"
-    filename = "gemini-keys.txt"
 
-    scan(
-        regex=regex,
+    conditions = [Condition(query=query, regex=regex)]
+    default_model = "gemini-1.5-pro-latest"
+    provider = GeminiProvider(conditions=conditions, default_model=default_model)
+
+    return scan(
         session=session,
-        check=verify,
-        filename=filename,
-        query=query,
+        provider=provider,
         with_api=with_api,
         page_num=page_num,
+        thread_num=thread_num,
         fast=fast,
+        skip=skip,
     )
 
 
-def scan_openai_like_keys(
+def scan_openai_keys(
     session: str,
-    query: str,
-    regex: str,
-    filename: str,
-    address: str,
-    model: str,
     with_api: bool = False,
     page_num: int = -1,
     fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
 ) -> None:
-    def verify(token: str, url: str, model: str) -> bool:
-        token, url, model = trim(token), trim(url), trim(model)
-        if not token or not url or not model:
-            return False
-
-        headers = {"content-type": "application/json", "authorization": f"Bearer {token}"}
-        data = chat(url=url, headers=headers, model=model)
-        return data is not None
-
-    query, regex, filename = trim(query), trim(regex), trim(filename)
-    if not query or not regex or not filename:
-        logging.error(f"[ScanOpenAILike] query, regex, filename cannot be empty")
-        return
-
-    default_address = "https://api.openai.com/v1/chat/completions"
-    address = trim(address) or default_address
-
-    if not re.match(r"^https?:\/\/([\w\-_]+\.[\w\-_]+)+", address):
-        logging.error(f"[ScanOpenAILike] base_url must be a valid url")
-        return
-
-    model = trim(model)
-    if not model:
-        if address == default_address:
-            model = "gpt-4o-mini"
-        else:
-            logging.error(f"[ScanOpenAILike] model cannot be empty")
-            return
-
-    check = partial(verify, url=address, model=model)
-    scan(
-        regex=regex,
-        session=session,
-        check=check,
-        filename=filename,
-        query=query,
-        with_api=with_api,
-        page_num=page_num,
-        fast=fast,
-    )
-
-
-def scan_openai_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
     # TODO: optimize query syntax for github api
     query = '"T3BlbkFJ"' if with_api else ""
-    regex = r"sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+    regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{155}|[a-zA-Z0-9_\-]{123})A"
 
-    return scan_openai_like_keys(
+    conditions = [Condition(query=query, regex=regex)]
+    provider = OpenAIProvider(conditions=conditions, default_model="gpt-4o-mini")
+
+    return scan(
         session=session,
-        query=query,
-        regex=regex,
-        filename="openai-keys.txt",
-        address="https://api.openai.com/v1/chat/completions",
-        model="gpt-4o-mini",
+        provider=provider,
         with_api=with_api,
         page_num=page_num,
+        thread_num=thread_num,
         fast=fast,
+        skip=skip,
     )
 
 
-def scan_groq_keys(session: str, with_api: bool = False, page_num: int = -1, fast: bool = False) -> None:
+def scan_groq_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+) -> None:
     query = '"WGdyb3FY"' if with_api else ""
     regex = r"gsk_[a-zA-Z0-9]{20}WGdyb3FY[a-zA-Z0-9]{24}"
 
-    return scan_openai_like_keys(
+    conditions = [Condition(query=query, regex=regex)]
+    provider = GroqProvider(conditions=conditions, default_model="llama3-8b-8192")
+
+    return scan(
         session=session,
-        query=query,
-        regex=regex,
-        filename="groq-keys.txt",
-        address="https://api.groq.com/openai/v1/chat/completions",
-        model="llama3-8b-8192",
+        provider=provider,
         with_api=with_api,
         page_num=page_num,
+        thread_num=thread_num,
         fast=fast,
+        skip=skip,
     )
 
 
@@ -572,17 +847,17 @@ def http_get(
     )
 
 
-def multi_thread_run(func: typing.Callable, tasks: list, num_threads: int = None) -> list:
+def multi_thread_run(func: typing.Callable, tasks: list, thread_num: int = None) -> list:
     if not func or not tasks or not isinstance(tasks, list):
         return []
 
-    if num_threads is None or num_threads <= 0:
-        num_threads = min(len(tasks), (os.cpu_count() or 1) * 2)
+    if thread_num is None or thread_num <= 0:
+        thread_num = min(len(tasks), (os.cpu_count() or 1) * 2)
 
     funcname = getattr(func, "__name__", repr(func))
 
     results, starttime = [None] * len(tasks), time.time()
-    with futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+    with futures.ThreadPoolExecutor(max_workers=thread_num) as executor:
         if isinstance(tasks[0], (list, tuple)):
             collections = {executor.submit(func, *param): i for i, param in enumerate(tasks)}
         else:
@@ -622,7 +897,7 @@ def encoding_url(url: str) -> str:
     return url
 
 
-def write_file(directory: str, lines: str | list) -> bool:
+def write_file(directory: str, lines: str | list, overwrite: bool = True) -> bool:
     if not directory or not lines or not isinstance(lines, (str, list)):
         logging.error(f"filename or lines is invalid, filename: {directory}")
         return False
@@ -634,10 +909,12 @@ def write_file(directory: str, lines: str | list) -> bool:
         filepath = os.path.abspath(os.path.dirname(directory))
         os.makedirs(filepath, exist_ok=True)
 
+        mode = "w+" if overwrite else "a+"
+
         # waitting for lock
         FILE_LOCK.acquire(30)
 
-        with open(directory, "a+", encoding="UTF8") as f:
+        with open(directory, mode=mode, encoding="UTF8") as f:
             f.write(lines + "\n")
             f.flush()
 
@@ -668,6 +945,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan claude api keys",
+    )
+
+    parser.add_argument(
+        "-e",
+        "--elide",
+        dest="elide",
+        action="store_true",
+        default=False,
+        help="skip search new keys from github",
     )
 
     parser.add_argument(
@@ -703,7 +989,7 @@ if __name__ == "__main__":
         type=int,
         required=False,
         default=-1,
-        help="number of pages to scan. default is -1, mean scan all pages",
+        help="concurrent thread number. default is -1, mean auto select",
     )
 
     parser.add_argument(
@@ -713,6 +999,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan openai api keys",
+    )
+
+    parser.add_argument(
+        "-p",
+        "--pages",
+        type=int,
+        required=False,
+        default=-1,
+        help="number of pages to scan. default is -1, mean scan all pages",
     )
 
     parser.add_argument(
@@ -728,30 +1023,50 @@ if __name__ == "__main__":
         "-s",
         "--session",
         type=str,
-        required=True,
+        required=False,
         default="",
-        help="github user session, key name is 'user_session'",
+        help="github token if use rest api else user session key named 'user_session'",
     )
 
     args = parser.parse_args()
     session = trim(args.session)
 
-    if not session:
-        logging.error(f"session cannot be empty")
-        exit(1)
-
     if args.all or args.claude:
-        logging.info(f"start to scan claude api keys")
-        scan_anthropic_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
+        scan_anthropic_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+        )
 
     if args.all or args.gemini:
-        logging.info(f"start to scan gemini api keys")
-        scan_gemini_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
+        scan_gemini_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+        )
 
     if args.all or args.llama:
-        logging.info(f"start to scan groq api keys")
-        scan_groq_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
+        scan_groq_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+        )
 
     if args.all or args.openai:
-        logging.info(f"start to scan openai api keys")
-        scan_openai_keys(session=session, with_api=args.rest, page_num=args.num, fast=args.fast)
+        scan_openai_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+        )
