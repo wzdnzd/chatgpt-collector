@@ -66,14 +66,14 @@ class Account(object):
     # domain address
     domain: str
 
-    # username
-    username: str
+    # email
+    email: str
 
     # password
     password: str
 
-    # email
-    email: str
+    # username
+    username: str
 
     # access token
     token: str = ""
@@ -128,9 +128,9 @@ class ServiceInfo(Account):
 
         return cls(
             domain=account.domain,
-            username=account.username,
-            password=account.password,
             email=account.email,
+            password=account.password,
+            username=account.username,
             token=account.token,
             token_type=account.token_type,
             cookie=account.cookie,
@@ -147,9 +147,9 @@ class ServiceInfo(Account):
     def to_dict(self) -> dict:
         data = {
             "domain": self.domain,
-            "username": self.username,
-            "password": self.password,
             "email": self.email,
+            "password": self.password,
+            "username": self.username,
             "available": self.available,
             "token": self.token,
             "token_type": self.token_type,
@@ -174,9 +174,9 @@ class ServiceInfo(Account):
         try:
             data = json.loads(content)
             domain = data.get("domain", "")
-            username = data.get("username", "")
-            password = data.get("password", "")
             email = data.get("email", "")
+            password = data.get("password", "")
+            username = data.get("username", "")
             available = data.get("available", True)
             token = data.get("token", "")
             token_type = data.get("token_type", "Bearer")
@@ -189,9 +189,9 @@ class ServiceInfo(Account):
 
             return cls(
                 domain=domain,
-                username=username,
-                password=password,
                 email=email,
+                password=password,
+                username=username,
                 token=token,
                 token_type=token_type,
                 available=available,

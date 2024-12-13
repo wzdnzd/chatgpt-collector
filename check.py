@@ -7,7 +7,6 @@ import argparse
 import asyncio
 import errno
 import json
-import keyword
 import os
 import time
 import traceback
@@ -161,6 +160,9 @@ def preprocess(
     threshold = max(0, threshold)
     source = utils.trim(source)
 
+    # dedup source file
+    dedup(filepath=source)
+
     if not os.path.exists(source) or not os.path.isfile(source):
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), source)
 
@@ -196,6 +198,9 @@ def preprocess(
             line = utils.trim(line).replace("\n", "").lower()
             if not line or line.startswith("#") or line.startswith(";") or line in records:
                 continue
+
+            if not line.startswith("https://") and not line.startswith("http://"):
+                line = "http://" + line
 
             news.append([line, "", "", "", ""])
 
