@@ -8,6 +8,7 @@ import asyncio
 import errno
 import json
 import os
+import re
 import time
 import traceback
 from collections import defaultdict
@@ -79,7 +80,7 @@ def dedup(filepath: str) -> None:
 
         domain = utils.extract_domain(url=line, include_protocal=False)
         if domain:
-            if not line.startswith("http://") and not line.startswith("https://"):
+            if not re.match(r"^https?://", line, flags=re.I):
                 line = "http://" + line
 
             groups[domain].add(line)
@@ -199,7 +200,7 @@ def preprocess(
             if not line or line.startswith("#") or line.startswith(";") or line in records:
                 continue
 
-            if not line.startswith("https://") and not line.startswith("http://"):
+            if not re.match(r"^https?://", line, flags=re.I):
                 line = "http://" + line
 
             news.append([line, "", "", "", ""])

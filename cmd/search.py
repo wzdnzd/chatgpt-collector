@@ -137,6 +137,9 @@ class Provider(object):
         # filename for summary
         self.summary_filename = f"{filename}-summary.json"
 
+        # filename for links included keys
+        self.links_filename = f"{filename}-links.txt"
+
         # base url for llm service api
         self.base_url = base_url
 
@@ -412,6 +415,65 @@ def search_code(query: str, session: str, page: int, with_api: bool, peer_page: 
         return []
 
 
+def batch_search_code(
+    session: str,
+    query: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    thread_num: int = None,
+    fast: bool = False,
+) -> list[str]:
+    session, query = trim(session), trim(query)
+    if not query or not session:
+        logging.error(f"[Search] skip to search due to query or session is empty")
+        return []
+
+    keyword = urllib.parse.quote(query, safe="")
+    peer_page, count = 100, 5
+
+    if with_api:
+        total = get_total_num(query=keyword, token=session)
+        logging.info(f"[Search] found {total} items with query: {query}")
+
+        if total > 0:
+            count = math.ceil(total / peer_page)
+
+    # see: https://stackoverflow.com/questions/37602893/github-search-limit-results
+    # the search api will return up to 1000 results per query (including pagination, peer_page: 100)
+    # and web search is limited to 5 pages
+    # so maxmum page num is 10
+    page_num = min(count if page_num < 0 or page_num > count else page_num, 10)
+    if page_num <= 0:
+        logging.error(f"[Search] page number must be greater than 0")
+        return []
+
+    links = list()
+    if fast:
+        # concurrent requests are easy to fail but faster
+        queries = [[keyword, session, x, with_api, peer_page] for x in range(1, page_num + 1)]
+        candidates = multi_thread_run(
+            func=search_code,
+            tasks=queries,
+            thread_num=thread_num,
+        )
+        links = list(set(itertools.chain.from_iterable(candidates)))
+    else:
+        # sequential requests are more stable but slower
+        potentials = set()
+        for i in range(1, page_num + 1):
+            urls = search_code(query=keyword, session=session, page=i, with_api=with_api, peer_page=peer_page)
+            potentials.update([x for x in urls if x])
+
+            # avoid github api rate limit: 10RPM
+            time.sleep(random.randint(6, 12))
+
+        links = list(potentials)
+    if not links:
+        logging.warning(f"[Search] cannot found any link with query: {query}")
+
+    return links
+
+
 def extract(url: str, regex: str, retries: int = 3) -> list[str]:
     if not isinstance(url, str) or not isinstance(regex, str):
         return []
@@ -440,27 +502,6 @@ def scan(
     fast: bool = False,
     skip: bool = False,
 ) -> None:
-    def load_exist_keys(filepath: str) -> str:
-        filepath = trim(filepath)
-        if not filepath:
-            logging.error(f"[Scan] filepath cannot be empty")
-            return []
-
-        if not os.path.exists(filepath) or not os.path.isfile(filepath):
-            logging.error(f"[Scan] file not found: {filepath}")
-            return []
-
-        lines = list()
-        with open(filepath, "r", encoding="utf8") as f:
-            for line in f.readlines():
-                text = trim(line)
-                if not text or text.startswith(";") or text.startswith("#"):
-                    continue
-
-                lines.append(text)
-
-        return lines
-
     if not isinstance(provider, Provider):
         return
 
@@ -472,10 +513,11 @@ def scan(
     records = set()
     filepath = os.path.join(PATH, keys_filename)
     material = os.path.join(PATH, provider.material_filename)
+    links_filename = os.path.join(PATH, provider.links_filename)
 
     if os.path.exists(filepath) and os.path.isfile(filepath):
         # load exists valid keys
-        records.update(load_exist_keys(filepath=filepath))
+        records.update(read_file(filepath=filepath))
         logging.info(f"[Scan] {provider.name}: loaded {len(records)} exists keys from file {filepath}")
 
         # backup up exists file with current time
@@ -488,7 +530,7 @@ def scan(
 
     if os.path.exists(material) and os.path.isfile(material):
         # load potential keys from material file
-        records.update(load_exist_keys(filepath=material))
+        records.update(read_file(filepath=material))
 
     if not skip and provider.conditions:
         new_keys, start_time = set(), time.time()
@@ -507,6 +549,7 @@ def scan(
                 page_num=page_num,
                 thread_num=thread_num,
                 fast=fast,
+                links_file=links_filename,
             )
 
             if candidates:
@@ -561,58 +604,47 @@ def recall(
     page_num: int = -1,
     thread_num: int = None,
     fast: bool = False,
+    links_file: str = "",
 ) -> list[str]:
-    regex, session = trim(regex), trim(session)
-    if not regex or not session:
-        logging.error(f"[Search] skip to scan due to regex or session is empty")
+    regex = trim(regex)
+    if not regex:
+        logging.error(f"[Recall] skip to recall due to regex is empty")
         return []
 
+    links = set()
+    links_file = os.path.abspath(trim(links_file))
+    if os.path.exists(links_file) and os.path.isfile(links_file):
+        # load exists links from persisted file
+        lines = read_file(filepath=links_file)
+        for text in lines:
+            if not re.match(r"^https?://", text, flags=re.I):
+                text = f"http://{text}"
+
+            links.add(text)
+
+    session = trim(session)
     query = trim(query) or f"/{regex}/"
-    keyword = urllib.parse.quote(query, safe="")
-    peer_page, count = 100, 5
-
-    if with_api:
-        total = get_total_num(query=keyword, token=session)
-        logging.info(f"[Search] found {total} items with query: {query}")
-
-        if total > 0:
-            count = math.ceil(total / peer_page)
-
-    # see: https://stackoverflow.com/questions/37602893/github-search-limit-results
-    # the search api will return up to 1000 results per query (including pagination, peer_page: 100)
-    # and web search is limited to 5 pages
-    # so maxmum page num is 10
-    page_num = min(count if page_num < 0 or page_num > count else page_num, 10)
-    if page_num <= 0:
-        logging.error(f"[Search] page number must be greater than 0")
-        return []
-
-    links = None
-    if fast:
-        # concurrent requests are easy to fail but faster
-        queries = [[keyword, session, x, with_api, peer_page] for x in range(1, page_num + 1)]
-        candidates = multi_thread_run(
-            func=search_code,
-            tasks=queries,
+    if session:
+        sources = batch_search_code(
+            session=session,
+            query=query,
+            with_api=with_api,
+            page_num=page_num,
             thread_num=thread_num,
+            fast=fast,
         )
-        links = list(set(itertools.chain.from_iterable(candidates)))
-    else:
-        # sequential requests are more stable but slower
-        potentials = set()
-        for i in range(1, page_num + 1):
-            urls = search_code(query=keyword, session=session, page=i, with_api=with_api, peer_page=peer_page)
-            potentials.update([x for x in urls if x])
+        if sources:
+            links.update(sources)
 
-            # avoid github api rate limit: 10RPM
-            time.sleep(random.randint(6, 12))
-
-        links = list(potentials)
     if not links:
-        logging.warning(f"[Search] cannot found any link with query: {query}")
+        logging.warning(f"[Recall] cannot found any link with query: {query}")
         return []
 
-    logging.info(f"[Search] start to extract candidates from {len(links)} links")
+    # save links to file
+    if links_file and not write_file(directory=links_file, lines=list(links), overwrite=True):
+        logging.warning(f"[Recall] failed to save links to file: {links_file}, links: {links}")
+
+    logging.info(f"[Recall] start to extract candidates from {len(links)} links")
 
     tasks = [[x, regex, 3] for x in links if x]
     result = multi_thread_run(func=extract, tasks=tasks, thread_num=thread_num)
@@ -736,7 +768,7 @@ def scan_openai_keys(
 ) -> None:
     # TODO: optimize query syntax for github api
     query = '"T3BlbkFJ"' if with_api else ""
-    regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{155}|[a-zA-Z0-9_\-]{123})A"
+    regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{91}|[a-zA-Z0-9_\-]{123}|[a-zA-Z0-9_\-]{155})A"
 
     conditions = [Condition(query=query, regex=regex)]
     provider = OpenAIProvider(conditions=conditions, default_model="gpt-4o-mini")
@@ -895,6 +927,28 @@ def encoding_url(url: str) -> str:
         url = url[: url.find(c)] + pc + url[url.find(c) + len(c) :]
 
     return url
+
+
+def read_file(filepath: str) -> list[str]:
+    filepath = trim(filepath)
+    if not filepath:
+        logging.error(f"filepath cannot be empty")
+        return []
+
+    if not os.path.exists(filepath) or not os.path.isfile(filepath):
+        logging.error(f"file not found: {filepath}")
+        return []
+
+    lines = list()
+    with open(filepath, "r", encoding="utf8") as f:
+        for line in f.readlines():
+            text = trim(line)
+            if not text or text.startswith(";") or text.startswith("#"):
+                continue
+
+            lines.append(text)
+
+    return lines
 
 
 def write_file(directory: str, lines: str | list, overwrite: bool = True) -> bool:
