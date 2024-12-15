@@ -900,7 +900,7 @@ def no_model(content: str, model: str = "") -> bool:
     if not content:
         return False
 
-    pattern = r"model_not_found|对于模型.*?无可用渠道"
+    pattern = r"model_not_found|对于模型.*?无可用渠道|Invalid model name"
     model = utils.trim(model).lower()
     if not model.startswith("claude-"):
         pattern = rf"{pattern}|Anthropic|Claude"
