@@ -768,7 +768,7 @@ def scan_openai_keys(
 ) -> None:
     # TODO: optimize query syntax for github api
     query = '"T3BlbkFJ"' if with_api else ""
-    regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{91}|[a-zA-Z0-9_\-]{123}|[a-zA-Z0-9_\-]{155})A"
+    regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{91}|[a-zA-Z0-9_\-]{123}|[a-zA-Z0-9_\-]{155})A|sk-svcacct-[A-Za-z0-9_\-]+T3BlbkFJ[A-Za-z0-9_\-]+"
 
     conditions = [Condition(query=query, regex=regex)]
     provider = OpenAIProvider(conditions=conditions, default_model="gpt-4o-mini")
