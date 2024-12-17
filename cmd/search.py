@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 from concurrent import futures
 from dataclasses import dataclass, field
+from enum import Enum, unique
+from functools import lru_cache
 from threading import Lock
 
 CTX = ssl.create_default_context()
@@ -65,6 +67,9 @@ class KeyDetail(object):
     # token
     key: str
 
+    # available
+    available: bool = False
+
     # models that the key can access
     models: list[str] = field(default_factory=list)
 
@@ -76,6 +81,54 @@ class KeyDetail(object):
             return False
 
         return self.key == other.key
+
+
+@unique
+class ErrorReason(Enum):
+    # no error
+    NONE = 1
+
+    # insufficient_quota
+    NO_QUOTA = 2
+
+    # rate_limit_exceeded
+    RATE_LIMITED = 3
+
+    # model_not_found
+    NO_MODEL = 4
+
+    # account_deactivated
+    EXPIRED_KEY = 5
+
+    # invalid_api_key
+    INVALID_KEY = 6
+
+    # unsupported_country_region_territory
+    NO_ACCESS = 7
+
+    # server_error
+    SERVER_ERROR = 8
+
+    # bad request
+    BAD_REQUEST = 9
+
+    # unknown error
+    UNKNOWN = 10
+
+
+@dataclass
+class CheckResult(object):
+    # whether the key can be used now
+    available: bool = False
+
+    # error message if the key cannot be used
+    reason: ErrorReason = ErrorReason.UNKNOWN
+
+    def ok():
+        return CheckResult(available=True, reason=ErrorReason.NONE)
+
+    def fail(reason: ErrorReason):
+        return CheckResult(available=False, reason=reason)
 
 
 @dataclass
@@ -123,22 +176,29 @@ class Provider(object):
         if not base_url.endswith("/"):
             base_url += "/"
 
-        filename = name.replace(" ", "-").lower()
-
         # provider name
         self.name = name
 
-        # filename for keys
-        self.keys_filename = f"{filename}-keys.txt"
+        # directory
+        self.directory = name.replace(" ", "-").lower()
+
+        # filename for valid keys
+        self.keys_filename = "valid-keys.txt"
+
+        # filename for no quota keys
+        self.no_quota_filename = "no-quota-keys.txt"
+
+        # filename for need check again keys
+        self.wait_check_filename = "wait-check-keys.txt"
 
         # filename for extract keys
-        self.material_filename = f"{filename}-material.txt"
+        self.material_filename = f"material.txt"
 
         # filename for summary
-        self.summary_filename = f"{filename}-summary.json"
+        self.summary_filename = f"summary.json"
 
         # filename for links included keys
-        self.links_filename = f"{filename}-links.txt"
+        self.links_filename = f"links.txt"
 
         # base url for llm service api
         self.base_url = base_url
@@ -175,14 +235,30 @@ class Provider(object):
     def _get_headers(self, token: str) -> dict:
         raise NotImplementedError
 
-    def check(self, token):
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 200 and message:
+            return CheckResult.ok()
+        elif code == 400:
+            return CheckResult.fail(ErrorReason.BAD_REQUEST)
+        elif code == 401 or re.findall(r"invalid_api_key", message, flags=re.I):
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+        elif code == 403 or code == 404:
+            return CheckResult.fail(ErrorReason.NO_ACCESS)
+        elif code == 429:
+            return CheckResult.fail(ErrorReason.RATE_LIMITED)
+        elif code >= 500:
+            return CheckResult.fail(ErrorReason.SERVER_ERROR)
+
+        return CheckResult.fail(ErrorReason.UNKNOWN)
+
+    def check(self, token) -> CheckResult:
         url = urllib.parse.urljoin(self.base_url, self.completion_path)
         headers = self._get_headers(token=token)
         if not headers:
-            return False
+            return CheckResult.fail(ErrorReason.BAD_REQUEST)
 
-        data = chat(url=url, headers=headers, model=self.default_model)
-        return data is not None
+        code, message = chat(url=url, headers=headers, model=self.default_model)
+        return self._judge(code=code, message=message)
 
     def list_models(self, token) -> list[str]:
         raise NotImplementedError
@@ -201,14 +277,33 @@ class OpenAILikeProvider(Provider):
     ):
         super().__init__(name, base_url, completion_path, model_path, default_model, conditions, **kwargs)
 
-    def _get_headers(self, token):
+    def _get_headers(self, token: str) -> dict:
         token = trim(token)
         if not token:
             return None
 
         return {"content-type": "application/json", "authorization": f"Bearer {token}"}
 
-    def list_models(self, token):
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 200:
+            return CheckResult.ok()
+
+        message = trim(message)
+        if message:
+            if code == 403:
+                if re.findall(r"model_not_found", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.NO_MODEL)
+                elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.NO_ACCESS)
+            elif code == 429:
+                if re.findall(r"insufficient_quota|billing_not_active", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.NO_QUOTA)
+                elif re.findall(r"rate_limit_exceeded", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.RATE_LIMITED)
+
+        return super()._judge(code, message)
+
+    def list_models(self, token: str) -> list[str]:
         headers = self._get_headers(token=token)
         if not headers or not self.model_path:
             return []
@@ -247,14 +342,22 @@ class AnthropicProvider(Provider):
         default_model = trim(default_model) or "claude-3-5-sonnet-latest"
         super().__init__("anthropic", "https://api.anthropic.com", "/v1/messages", "", default_model, conditions)
 
-    def _get_headers(self, token):
+    def _get_headers(self, token: str) -> dict:
         token = trim(token)
         if not token:
             return None
 
         return {"content-type": "application/json", "x-api-key": token, "anthropic-version": "2023-06-01"}
 
-    def list_models(self, token):
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 400 and re.findall(r"Your credit balance is too low", trim(message), flags=re.I):
+            return CheckResult.fail(ErrorReason.NO_QUOTA)
+        elif code == 404 and re.findall(r"not_found_error", trim(message), flags=re.I):
+            return CheckResult.fail(ErrorReason.NO_MODEL)
+
+        return super()._judge(code, message)
+
+    def list_models(self, token) -> list[str]:
         token = trim(token)
         if not token:
             return []
@@ -280,10 +383,23 @@ class GeminiProvider(Provider):
 
         super().__init__("gemini", base_url, sub_path, sub_path, default_model, conditions)
 
-    def _get_headers(self, token):
+    def _get_headers(self, token: str) -> dict:
         return {"content-type": "application/json"}
 
-    def check(self, token):
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 200:
+            return CheckResult.ok()
+
+        message = trim(message)
+        if code == 400:
+            if re.findall(r"API_KEY_INVALID", message, flags=re.I):
+                return CheckResult.fail(ErrorReason.INVALID_KEY)
+            elif re.findall(r"FAILED_PRECONDITION", message, flags=re.I):
+                return CheckResult.fail(ErrorReason.NO_ACCESS)
+
+        return super()._judge(code, message)
+
+    def check(self, token: str) -> CheckResult:
         token = trim(token)
         if not token:
             return False
@@ -291,10 +407,10 @@ class GeminiProvider(Provider):
         url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{self.default_model}:generateContent?key={token}"
         params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
 
-        data = chat(url=url, headers=self._get_headers(token=token), params=params)
-        return data is not None
+        code, message = chat(url=url, headers=self._get_headers(token=token), params=params)
+        return self._judge(code=code, message=message)
 
-    def list_models(self, token):
+    def list_models(self, token: str) -> list[str]:
         token = trim(token)
         if not token:
             return []
@@ -474,6 +590,7 @@ def batch_search_code(
     return links
 
 
+@lru_cache(maxsize=2000)
 def extract(url: str, regex: str, retries: int = 3) -> list[str]:
     if not isinstance(url, str) or not isinstance(regex, str):
         return []
@@ -501,6 +618,7 @@ def scan(
     thread_num: int = None,
     fast: bool = False,
     skip: bool = False,
+    workspace: str = "",
 ) -> None:
     if not isinstance(provider, Provider):
         return
@@ -510,15 +628,18 @@ def scan(
         logging.error(f"[Scan] {provider.name}: keys filename cannot be empty")
         return
 
-    records = set()
-    filepath = os.path.join(PATH, keys_filename)
-    material = os.path.join(PATH, provider.material_filename)
-    links_filename = os.path.join(PATH, provider.links_filename)
+    workspace = trim(workspace)
+    directory = os.path.join(os.path.abspath(workspace) if workspace else PATH, provider.directory)
 
-    if os.path.exists(filepath) and os.path.isfile(filepath):
+    valid_keys_file = os.path.join(directory, keys_filename)
+    material_keys_file = os.path.join(directory, provider.material_filename)
+    links_file = os.path.join(directory, provider.links_filename)
+
+    records = set()
+    if os.path.exists(valid_keys_file) and os.path.isfile(valid_keys_file):
         # load exists valid keys
-        records.update(read_file(filepath=filepath))
-        logging.info(f"[Scan] {provider.name}: loaded {len(records)} exists keys from file {filepath}")
+        records.update(read_file(filepath=valid_keys_file))
+        logging.info(f"[Scan] {provider.name}: loaded {len(records)} exists keys from file {valid_keys_file}")
 
         # backup up exists file with current time
         words = keys_filename.rsplit(".", maxsplit=1)
@@ -526,11 +647,11 @@ def scan(
         if len(words) > 1:
             keys_filename += f".{words[1]}"
 
-        os.rename(filepath, os.path.join(PATH, keys_filename))
+        os.rename(valid_keys_file, os.path.join(directory, keys_filename))
 
-    if os.path.exists(material) and os.path.isfile(material):
+    if os.path.exists(material_keys_file) and os.path.isfile(material_keys_file):
         # load potential keys from material file
-        records.update(read_file(filepath=material))
+        records.update(read_file(filepath=material_keys_file))
 
     if not skip and provider.conditions:
         new_keys, start_time = set(), time.time()
@@ -549,7 +670,7 @@ def scan(
                 page_num=page_num,
                 thread_num=thread_num,
                 fast=fast,
-                links_file=links_filename,
+                links_file=links_file,
             )
 
             if candidates:
@@ -566,34 +687,90 @@ def scan(
         logging.warning(f"[Scan] {provider.name}: cannot extract any candidate with conditions: {provider.conditions}")
         return
 
-    items = list(records)
-
-    # save all potential keys to material file
-    if not write_file(directory=material, lines=items):
-        logging.error(f"[Scan] {provider.name}: failed to save potential keys to file: {material}, keys: {items}")
+    items, statistics = list(records), dict()
 
     logging.info(f"[Scan] {provider.name}: start to verify {len(items)} potential keys")
-
     masks = multi_thread_run(func=provider.check, tasks=items, thread_num=thread_num)
-    keys = [items[i] for i in range(len(masks)) if masks[i]]
 
-    if not keys:
+    # remove invalid keys and ave all potential keys to material file
+    material_keys = [items[i] for i in range(len(masks)) if masks[i].reason != ErrorReason.INVALID_KEY]
+    if material_keys and not write_file(directory=material_keys_file, lines=material_keys):
+        logging.error(
+            f"[Scan] {provider.name}: failed to save potential keys to file: {material_keys_file}, keys: {material_keys}"
+        )
+
+    # can be used keys
+    valid_keys = [items[i] for i in range(len(masks)) if masks[i].available]
+    if not valid_keys:
         logging.warning(f"[Scan] {provider.name}: cannot found any key with conditions: {provider.conditions}")
     else:
-        if not write_file(directory=filepath, lines=keys):
-            logging.error(f"[Scan] {provider.name}: failed to save keys to file: {filepath}, keys: {keys}")
+        if not write_file(directory=valid_keys_file, lines=valid_keys):
+            logging.error(f"[Scan] {provider.name}: failed to save keys to file: {valid_keys_file}, keys: {valid_keys}")
         else:
-            logging.info(f"[Scan] {provider.name}: found {len(keys)} valid keys, save them to file: {filepath}")
+            logging.info(
+                f"[Scan] {provider.name}: found {len(valid_keys)} valid keys, save them to file: {valid_keys_file}"
+            )
 
-        # list supported models for each key
-        models = multi_thread_run(func=provider.list_models, tasks=keys, thread_num=thread_num)
-        data = {keys[i]: models[i] or [] for i in range(len(keys))}
-        summary_path = os.path.join(PATH, provider.summary_filename)
+        statistics.update({k: True for k in valid_keys})
 
-        if write_file(directory=summary_path, lines=json.dumps(data, ensure_ascii=False, indent=4)):
-            logging.info(f"[Scan] {provider.name}: saved {len(keys)} keys summary to file: {summary_path}")
+    # no quota keys
+    no_quota_keys = [
+        items[i] for i in range(len(masks)) if not masks[i].available and masks[i].reason == ErrorReason.NO_QUOTA
+    ]
+    if no_quota_keys:
+        statistics.update({k: False for k in no_quota_keys})
+
+        # save no quota keys to file
+        no_quota_keys_file = os.path.join(directory, provider.no_quota_filename)
+        if not write_file(directory=no_quota_keys_file, lines=no_quota_keys):
+            logging.error(
+                f"[Scan] {provider.name}: failed to save no quota keys to file: {no_quota_keys_file}, keys: {no_quota_keys}"
+            )
         else:
-            logging.error(f"[Scan] {provider.name}: failed to save keys summary to file: {summary_path}, data: {data}")
+            logging.info(
+                f"[Scan] {provider.name}: found {len(no_quota_keys)} no quota keys, save them to file: {no_quota_keys_file}"
+            )
+
+    # not expired keys but wait to check again keys
+    wait_check_keys = [
+        items[i]
+        for i in range(len(masks))
+        if not masks[i].available and masks[i].reason in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL]
+    ]
+    if wait_check_keys:
+        statistics.update({k: False for k in wait_check_keys})
+
+        # save wait check keys to file
+        wait_check_keys_file = os.path.join(directory, provider.wait_check_filename)
+        if not write_file(directory=wait_check_keys_file, lines=wait_check_keys):
+            logging.error(
+                f"[Scan] {provider.name}: failed to save wait check keys to file: {wait_check_keys_file}, keys: {wait_check_keys}"
+            )
+        else:
+            logging.info(
+                f"[Scan] {provider.name}: found {len(wait_check_keys)} wait check keys, save them to file: {wait_check_keys_file}"
+            )
+
+    # list supported models for each key
+    last_keys = list(statistics.keys())
+    if not last_keys:
+        logging.error(f"[Scan] {provider.name}: no keys to list models")
+        return
+
+    models = multi_thread_run(func=provider.list_models, tasks=last_keys, thread_num=thread_num)
+    data = {
+        last_keys[i]: {
+            "available": statistics.get(last_keys[i]),
+            "models": models or [],
+        }
+        for i in range(len(last_keys))
+    }
+
+    summary_path = os.path.join(directory, provider.summary_filename)
+    if write_file(directory=summary_path, lines=json.dumps(data, ensure_ascii=False, indent=4)):
+        logging.info(f"[Scan] {provider.name}: saved {len(last_keys)} keys summary to file: {summary_path}")
+    else:
+        logging.error(f"[Scan] {provider.name}: failed to save keys summary to file: {summary_path}, data: {data}")
 
 
 def recall(
@@ -652,22 +829,29 @@ def recall(
     return list(itertools.chain.from_iterable(result))
 
 
-def chat(url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10) -> dict:
+def chat(
+    url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10
+) -> tuple[int, str]:
+    def output(code: int, message: str) -> None:
+        logging.error(
+            f"[Chat] failed to request url: {url}, headers: {headers}, status code: {code}, message: {message}"
+        )
+
     url, model = trim(url), trim(model)
     if not url:
         logging.error(f"[Chat] url cannot be empty")
-        return None
+        return 400, None
 
     if not isinstance(headers, dict):
         logging.error(f"[Chat] headers must be a dict")
-        return None
+        return 400, None
     elif len(headers) == 0:
         headers["content-type"] = "application/json"
 
     if not params or not isinstance(params, dict):
         if not model:
             logging.error(f"[Chat] model cannot be empty")
-            return None
+            return 400, None
 
         params = {
             "model": model,
@@ -678,29 +862,37 @@ def chat(url: str, headers: dict, model: str = "", params: dict = None, retries:
     payload = json.dumps(params).encode("utf8")
     timeout = max(1, timeout)
     retries = max(1, retries)
-    data, attempt = None, 0
+    code, message, attempt = 400, None, 0
 
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     while attempt < retries:
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=CTX) as response:
-                content = response.read()
-                data = json.loads(content)
+                code = 200
+                message = response.read().decode("utf8")
                 break
         except urllib.error.HTTPError as e:
-            if e.code != 401:
-                logging.error(
-                    f"[Chat] failed to request url: {url}, headers: {headers}, status code: {e.code}, message: {e.reason}"
-                )
-            if e.code in NO_RETRY_ERROR_CODES:
+            code = e.code
+            if code == 403 or code == 429:
+                # read response body
+                try:
+                    message = e.read().decode("utf8")
+                    output(code, message)
+                except:
+                    output(code, e.reason)
+            elif code != 401:
+                message = e.reason
+                output(code, message)
+
+            if code in NO_RETRY_ERROR_CODES:
                 break
         except Exception:
-            logging.error(f"[Chat] failed to request url: {url}, headers: {headers}, message: {traceback.format_exc()}")
+            output(code, traceback.format_exc())
 
         attempt += 1
         time.sleep(1)
 
-    return data
+    return code, message
 
 
 def scan_anthropic_keys(
@@ -710,11 +902,14 @@ def scan_anthropic_keys(
     fast: bool = False,
     skip: bool = False,
     thread_num: int = None,
+    workspace: str = "",
 ) -> None:
-    query = '"sk-ant-api03-"' if with_api else ""
-    regex = r"sk-ant-api03-[a-zA-Z0-9_\-]{93}AA"
+    regex = r"sk-ant-(?:sid01|api03)-[a-zA-Z0-9_\-]{93}AA"
+    if with_api:
+        conditions = [Condition(query="sk-ant-api03-", regex=regex), Condition(query="sk-ant-sid01-", regex=regex)]
+    else:
+        conditions = [Condition(query="", regex=regex)]
 
-    conditions = [Condition(query=query, regex=regex)]
     default_model = "claude-3-5-sonnet-latest"
     provider = AnthropicProvider(conditions=conditions, default_model=default_model)
 
@@ -726,6 +921,7 @@ def scan_anthropic_keys(
         thread_num=thread_num,
         fast=fast,
         skip=skip,
+        workspace=workspace,
     )
 
 
@@ -736,6 +932,7 @@ def scan_gemini_keys(
     fast: bool = False,
     skip: bool = False,
     thread_num: int = None,
+    workspace: str = "",
 ) -> None:
     query = '/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
     if with_api:
@@ -744,7 +941,7 @@ def scan_gemini_keys(
     regex = r"AIzaSy[a-zA-Z0-9_\-]{33}"
 
     conditions = [Condition(query=query, regex=regex)]
-    default_model = "gemini-1.5-pro-latest"
+    default_model = "gemini-exp-1206"
     provider = GeminiProvider(conditions=conditions, default_model=default_model)
 
     return scan(
@@ -755,6 +952,7 @@ def scan_gemini_keys(
         thread_num=thread_num,
         fast=fast,
         skip=skip,
+        workspace=workspace,
     )
 
 
@@ -765,6 +963,7 @@ def scan_openai_keys(
     fast: bool = False,
     skip: bool = False,
     thread_num: int = None,
+    workspace: str = "",
 ) -> None:
     # TODO: optimize query syntax for github api
     query = '"T3BlbkFJ"' if with_api else ""
@@ -781,6 +980,7 @@ def scan_openai_keys(
         thread_num=thread_num,
         fast=fast,
         skip=skip,
+        workspace=workspace,
     )
 
 
@@ -791,6 +991,7 @@ def scan_groq_keys(
     fast: bool = False,
     skip: bool = False,
     thread_num: int = None,
+    workspace: str = "",
 ) -> None:
     query = '"WGdyb3FY"' if with_api else ""
     regex = r"gsk_[a-zA-Z0-9]{20}WGdyb3FY[a-zA-Z0-9]{24}"
@@ -806,6 +1007,7 @@ def scan_groq_keys(
         thread_num=thread_num,
         fast=fast,
         skip=skip,
+        workspace=workspace,
     )
 
 
@@ -1082,6 +1284,15 @@ if __name__ == "__main__":
         help="github token if use rest api else user session key named 'user_session'",
     )
 
+    parser.add_argument(
+        "-w",
+        "--workspace",
+        type=str,
+        default=PATH,
+        required=False,
+        help="workspace path",
+    )
+
     args = parser.parse_args()
     session = trim(args.session)
 
@@ -1093,6 +1304,7 @@ if __name__ == "__main__":
             thread_num=args.num,
             fast=args.fast,
             skip=args.elide,
+            workspace=args.workspace,
         )
 
     if args.all or args.gemini:
@@ -1103,6 +1315,7 @@ if __name__ == "__main__":
             thread_num=args.num,
             fast=args.fast,
             skip=args.elide,
+            workspace=args.workspace,
         )
 
     if args.all or args.llama:
@@ -1113,6 +1326,7 @@ if __name__ == "__main__":
             thread_num=args.num,
             fast=args.fast,
             skip=args.elide,
+            workspace=args.workspace,
         )
 
     if args.all or args.openai:
@@ -1123,4 +1337,5 @@ if __name__ == "__main__":
             thread_num=args.num,
             fast=args.fast,
             skip=args.elide,
+            workspace=args.workspace,
         )
