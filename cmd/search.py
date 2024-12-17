@@ -349,6 +349,45 @@ class AnthropicProvider(Provider):
 
         return {"content-type": "application/json", "x-api-key": token, "anthropic-version": "2023-06-01"}
 
+    def check(self, token: str) -> CheckResult:
+        token = trim(token)
+        if token.startswith("sk-ant-sid01-"):
+            logging.info(f"found session key: {token}, check it with organizations api")
+
+            url = "https://api.claude.ai/api/organizations"
+            headers = {
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "accept-language": "en-US,en;q=0.9",
+                "cache-control": "max-age=0",
+                "cookie": f"sessionKey={token}",
+                "user-agent": USER_AGENT,
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-site": "none",
+            }
+
+            content = http_get(url=url, headers=headers, interval=1)
+            if not content or re.findall(r"Invalid authorization", content, flags=re.I):
+                return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+            try:
+                data = json.loads(content)
+                valid = False
+                if data and isinstance(data, list):
+                    valid = trim(data[0].get("name", None)) != ""
+
+                    capabilities = data[0].get("capabilities", [])
+                    if capabilities and isinstance(capabilities, list) and "claude_pro" in capabilities:
+                        logging.info(f"found claude pro key: {token}")
+
+                if not valid:
+                    logging.warning(f"check error, anthropic session key: {token}, message: {content}")
+
+                return CheckResult.ok() if valid else CheckResult.fail(ErrorReason.INVALID_KEY)
+            except:
+                return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super().check(token)
+
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 400 and re.findall(r"Your credit balance is too low", trim(message), flags=re.I):
             return CheckResult.fail(ErrorReason.NO_QUOTA)
