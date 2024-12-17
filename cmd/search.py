@@ -336,6 +336,13 @@ class GroqProvider(OpenAILikeProvider):
 
         super().__init__("groq", base_url, default_model, conditions)
 
+    def _get_headers(self, token: str) -> dict:
+        headers = super()._get_headers(token)
+        if headers and "user-agent" not in headers:
+            headers["user-agent"] = USER_AGENT
+
+        return headers
+
 
 class AnthropicProvider(Provider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
