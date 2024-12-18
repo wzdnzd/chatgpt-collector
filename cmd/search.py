@@ -41,8 +41,14 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 }
 
+
 DEFAULT_QUESTION = "Hello"
 
+
+DEFAULT_COMPLETION_PATH = "/v1/chat/completions"
+
+
+DEFAULT_MODEL_PATH = "/v1/models"
 
 # error http status code that do not need to retry
 NO_RETRY_ERROR_CODES = {400, 401, 402, 404, 422}
@@ -275,10 +281,13 @@ class OpenAILikeProvider(Provider):
         base_url: str,
         default_model: str,
         conditions: list[Condition],
-        completion_path: str = "/v1/chat/completions",
-        model_path: str = "/v1/models",
+        completion_path: str = "",
+        model_path: str = "",
         **kwargs,
     ):
+        completion_path = trim(completion_path) or DEFAULT_COMPLETION_PATH
+        model_path = trim(model_path) or DEFAULT_MODEL_PATH
+
         super().__init__(name, base_url, completion_path, model_path, default_model, conditions, **kwargs)
 
     def _get_headers(self, token: str) -> dict:
@@ -300,7 +309,7 @@ class OpenAILikeProvider(Provider):
                 elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
             elif code == 429:
-                if re.findall(r"insufficient_quota|billing_not_active", message, flags=re.I):
+                if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
                 elif re.findall(r"rate_limit_exceeded", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.RATE_LIMITED)
@@ -321,7 +330,6 @@ class OpenAILikeProvider(Provider):
             result = json.loads(content)
             return [x.get("id", "") for x in result.get("data", [])]
         except:
-            logging.error(f"failed to parse models from response: {content}")
             return []
 
 
@@ -646,7 +654,8 @@ def batch_search_code(
             potentials.update([x for x in urls if x])
 
             # avoid github api rate limit: 10RPM
-            time.sleep(random.randint(6, 12))
+            if i < page_num:
+                time.sleep(random.randint(6, 12))
 
         links = list(potentials)
     if not links:
@@ -665,9 +674,19 @@ def extract(url: str, regex: str, retries: int = 3) -> list[str]:
         groups = re.findall(regex, content, flags=re.I)
         items = set()
         for x in groups:
-            key = trim(x)
-            if key:
-                items.add(key)
+            texts = list()
+            if isinstance(x, str):
+                texts.append(x)
+            elif isinstance(x, (tuple, list)):
+                texts.extend(list(x))
+            else:
+                logging.error(f"unknown type: {type(x)}, value: {x}. please optimize your regex")
+                continue
+
+            for text in texts:
+                key = trim(text)
+                if key:
+                    items.add(key)
 
         return list(items)
     except:
@@ -826,7 +845,7 @@ def scan(
     data = {
         last_keys[i]: {
             "available": statistics.get(last_keys[i]),
-            "models": models or [],
+            "models": (models[i] if models else []) or [],
         }
         for i in range(len(last_keys))
     }
@@ -1306,6 +1325,130 @@ def write_file(directory: str, lines: str | list, overwrite: bool = True) -> boo
         return False
 
 
+def scan_others(args: argparse.Namespace) -> None:
+    if not args or not isinstance(args, argparse.Namespace):
+        return
+
+    name = trim(args.pn)
+    if not name:
+        logging.error(f"provider name cannot be empty")
+        return
+
+    model = trim(args.pm)
+    if not model:
+        logging.error(f"model name to be checked cannot be empty")
+        return
+
+    base_url = trim(args.pb)
+    if not re.match(r"^https?://([\w\-_]+\.[\w\-_]+)+", base_url):
+        logging.error(f"invalid base url: {base_url}")
+        return
+
+    pattern = trim(args.pp)
+    if not pattern:
+        logging.error(f"pattern for extracting keys cannot be empty")
+        return
+
+    query = trim(args.pq)
+    if args.rest and not query:
+        logging.error(f"query cannot be empty when using rest api")
+        return
+
+    conditions = [Condition(query=query, regex=pattern)]
+    provider = OpenAILikeProvider(
+        name=name,
+        base_url=base_url,
+        default_model=model,
+        conditions=conditions,
+        completion_path=args.pc,
+        model_path=args.pl,
+    )
+
+    return scan(
+        session=args.session,
+        provider=provider,
+        with_api=args.rest,
+        page_num=args.num,
+        thread_num=args.thread,
+        fast=args.fast,
+        skip=args.elide,
+        workspace=args.workspace,
+    )
+
+
+def main(args: argparse.Namespace) -> None:
+    session = trim(args.session)
+
+    if args.all or args.claude:
+        scan_anthropic_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.deepseek:
+        scan_deepseek_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.gemini:
+        scan_gemini_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.llama:
+        scan_groq_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.moonshot:
+        scan_moonshot_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.openai:
+        scan_openai_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.variant:
+        return scan_others(args=args)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -1387,7 +1530,7 @@ if __name__ == "__main__":
         type=int,
         required=False,
         default=-1,
-        help="concurrent thread number. default is -1, mean auto select",
+        help="number of pages to scan. default is -1, mean scan all pages",
     )
 
     parser.add_argument(
@@ -1397,15 +1540,6 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan openai api keys",
-    )
-
-    parser.add_argument(
-        "-p",
-        "--pages",
-        type=int,
-        required=False,
-        default=-1,
-        help="number of pages to scan. default is -1, mean scan all pages",
     )
 
     parser.add_argument(
@@ -1427,6 +1561,24 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-t",
+        "--thread",
+        type=int,
+        required=False,
+        default=-1,
+        help="concurrent thread number. default is -1, mean auto select",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--variant",
+        dest="variant",
+        action="store_true",
+        default=False,
+        help="scan other api keys like openai",
+    )
+
+    parser.add_argument(
         "-w",
         "--workspace",
         type=str,
@@ -1435,71 +1587,74 @@ if __name__ == "__main__":
         help="workspace path",
     )
 
-    args = parser.parse_args()
-    session = trim(args.session)
+    parser.add_argument(
+        "-pb",
+        "--provider-base",
+        dest="pb",
+        type=str,
+        default="",
+        required=False,
+        help="base url, must be a valid url start with 'http://' or 'https://'",
+    )
 
-    if args.all or args.claude:
-        scan_anthropic_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pc",
+        "--provider-chat",
+        dest="pc",
+        type=str,
+        default="",
+        required=False,
+        help="chat api path, default is '/v1/chat/completions'",
+    )
 
-    if args.all or args.deepseek:
-        scan_deepseek_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pl",
+        "--provider-list",
+        dest="pl",
+        type=str,
+        default="",
+        required=False,
+        help="list models api path, default is '/v1/models'",
+    )
 
-    if args.all or args.gemini:
-        scan_gemini_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pm",
+        "--provider-model",
+        dest="pm",
+        type=str,
+        default="",
+        required=False,
+        help="default model name",
+    )
 
-    if args.all or args.llama:
-        scan_groq_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pn",
+        "--provider-name",
+        dest="pn",
+        type=str,
+        default="",
+        required=False,
+        help="provider name, contain only letters, numbers, '_' and '-'",
+    )
 
-    if args.all or args.moonshot:
-        scan_moonshot_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pq",
+        "--provider-query",
+        dest="pq",
+        type=str,
+        default="",
+        required=False,
+        help="query syntax for github search",
+    )
 
-    if args.all or args.openai:
-        scan_openai_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.pages,
-            thread_num=args.num,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
+    parser.add_argument(
+        "-pp",
+        "--provider-pattern",
+        dest="pp",
+        type=str,
+        default="",
+        required=False,
+        help="pattern for extract keys from code, default is 'sk-[a-zA-Z0-9_\-]{48}'",
+    )
+
+    main(parser.parse_args())
