@@ -45,7 +45,7 @@ DEFAULT_QUESTION = "Hello"
 
 
 # error http status code that do not need to retry
-NO_RETRY_ERROR_CODES = {400, 401, 404, 422}
+NO_RETRY_ERROR_CODES = {400, 401, 402, 404, 422}
 
 
 FILE_LOCK = Lock()
@@ -180,7 +180,7 @@ class Provider(object):
         self.name = name
 
         # directory
-        self.directory = name.replace(" ", "-").lower()
+        self.directory = re.sub(r"[^a-zA-Z0-9_\-]", "-", name, flags=re.I).lower()
 
         # filename for valid keys
         self.keys_filename = "valid-keys.txt"
@@ -236,22 +236,26 @@ class Provider(object):
         raise NotImplementedError
 
     def _judge(self, code: int, message: str) -> CheckResult:
+        message = trim(message)
+
         if code == 200 and message:
             return CheckResult.ok()
         elif code == 400:
             return CheckResult.fail(ErrorReason.BAD_REQUEST)
         elif code == 401 or re.findall(r"invalid_api_key", message, flags=re.I):
             return CheckResult.fail(ErrorReason.INVALID_KEY)
+        elif code == 402 or re.findall(r"insufficient", message, flags=re.I):
+            return CheckResult.fail(ErrorReason.NO_QUOTA)
         elif code == 403 or code == 404:
             return CheckResult.fail(ErrorReason.NO_ACCESS)
-        elif code == 429:
+        elif code == 418 or code == 429:
             return CheckResult.fail(ErrorReason.RATE_LIMITED)
         elif code >= 500:
             return CheckResult.fail(ErrorReason.SERVER_ERROR)
 
         return CheckResult.fail(ErrorReason.UNKNOWN)
 
-    def check(self, token) -> CheckResult:
+    def check(self, token: str) -> CheckResult:
         url = urllib.parse.urljoin(self.base_url, self.completion_path)
         headers = self._get_headers(token=token)
         if not headers:
@@ -260,7 +264,7 @@ class Provider(object):
         code, message = chat(url=url, headers=headers, model=self.default_model)
         return self._judge(code=code, message=message)
 
-    def list_models(self, token) -> list[str]:
+    def list_models(self, token: str) -> list[str]:
         raise NotImplementedError
 
 
@@ -282,7 +286,7 @@ class OpenAILikeProvider(Provider):
         if not token:
             return None
 
-        return {"content-type": "application/json", "authorization": f"Bearer {token}"}
+        return {"content-type": "application/json", "authorization": f"Bearer {token}", "user-agent": USER_AGENT}
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 200:
@@ -336,12 +340,27 @@ class GroqProvider(OpenAILikeProvider):
 
         super().__init__("groq", base_url, default_model, conditions)
 
-    def _get_headers(self, token: str) -> dict:
-        headers = super()._get_headers(token)
-        if headers and "user-agent" not in headers:
-            headers["user-agent"] = USER_AGENT
 
-        return headers
+class DeepseekProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "deepseek-chat"
+        base_url = "https://api.deepseek.com"
+
+        super().__init__("deepseek", base_url, default_model, conditions)
+
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 418:
+            return CheckResult.fail(ErrorReason.RATE_LIMITED)
+
+        return super()._judge(code, message)
+
+
+class MoonshotProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "moonshot-v1-8k"
+        base_url = "https://api.moonshot.cn"
+
+        super().__init__("moonshot", base_url, default_model, conditions)
 
 
 class AnthropicProvider(Provider):
@@ -1057,6 +1076,65 @@ def scan_groq_keys(
     )
 
 
+def scan_deepseek_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    # TODO: optimize query syntax for github api
+    query = '"deepseek" AND "sk-"' if with_api else ""
+    regex = r"sk-[a-z0-9]{12}4[a-z0-9]{19}"
+
+    conditions = [Condition(query=query, regex=regex)]
+    provider = DeepseekProvider(conditions=conditions, default_model="deepseek-chat")
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
+def scan_moonshot_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    # TODO: optimize query syntax for github api
+    query = '/sk-[a-zA-Z0-9]{48}/ AND "https://api.moonshot.cn/v1"'
+    if with_api:
+        query = '"https://api.moonshot.cn/v1" AND "sk-"'
+
+    regex = r"sk-[a-zA-Z0-9]{48}"
+
+    conditions = [Condition(query=query, regex=regex)]
+    provider = MoonshotProvider(conditions=conditions, default_model="moonshot-v1-8k")
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
 def trim(text: str) -> str:
     if not text or type(text) != str:
         return ""
@@ -1250,6 +1328,15 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-d",
+        "--deepseek",
+        dest="deepseek",
+        action="store_true",
+        default=False,
+        help="scan deepseek api keys",
+    )
+
+    parser.add_argument(
         "-e",
         "--elide",
         dest="elide",
@@ -1283,6 +1370,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan groq api keys",
+    )
+
+    parser.add_argument(
+        "-m",
+        "--moonshot",
+        dest="moonshot",
+        action="store_true",
+        default=False,
+        help="scan moonshot api keys",
     )
 
     parser.add_argument(
@@ -1353,6 +1449,17 @@ if __name__ == "__main__":
             workspace=args.workspace,
         )
 
+    if args.all or args.deepseek:
+        scan_deepseek_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
     if args.all or args.gemini:
         scan_gemini_keys(
             session=session,
@@ -1366,6 +1473,17 @@ if __name__ == "__main__":
 
     if args.all or args.llama:
         scan_groq_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.pages,
+            thread_num=args.num,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.all or args.moonshot:
+        scan_moonshot_keys(
             session=session,
             with_api=args.rest,
             page_num=args.pages,
