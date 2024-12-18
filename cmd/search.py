@@ -381,6 +381,8 @@ class OpenAILikeProvider(Provider):
                     return CheckResult.fail(ErrorReason.NO_MODEL)
                 elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
+                elif re.findall(r"exceeded_current_quota_error", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.NO_QUOTA)
             elif code == 429:
                 if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
@@ -421,28 +423,6 @@ class OpenAIProvider(OpenAILikeProvider):
         super().__init__("openai", base_url, default_model, conditions)
 
 
-class GroqProvider(OpenAILikeProvider):
-    def __init__(self, conditions: list[Condition], default_model: str = ""):
-        default_model = trim(default_model) or "llama3-8b-8192"
-        base_url = "https://api.groq.com/openai"
-
-        super().__init__("groq", base_url, default_model, conditions)
-
-
-class DeepseekProvider(OpenAILikeProvider):
-    def __init__(self, conditions: list[Condition], default_model: str = ""):
-        default_model = trim(default_model) or "deepseek-chat"
-        base_url = "https://api.deepseek.com"
-
-        super().__init__("deepseek", base_url, default_model, conditions)
-
-    def _judge(self, code: int, message: str) -> CheckResult:
-        if code == 418:
-            return CheckResult.fail(ErrorReason.RATE_LIMITED)
-
-        return super()._judge(code, message)
-
-
 class DoubaoProvider(OpenAILikeProvider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
         default_model = trim(default_model) or "doubao-pro-32k"
@@ -470,14 +450,6 @@ class DoubaoProvider(OpenAILikeProvider):
             return CheckResult.fail(ErrorReason.INVALID_KEY)
 
         return super().check(token=token, address=address, endpoint=endpoint, model=model)
-
-
-class MoonshotProvider(OpenAILikeProvider):
-    def __init__(self, conditions: list[Condition], default_model: str = ""):
-        default_model = trim(default_model) or "moonshot-v1-8k"
-        base_url = "https://api.moonshot.cn"
-
-        super().__init__("moonshot", base_url, default_model, conditions)
 
 
 class QianFanProvider(OpenAILikeProvider):
@@ -1035,7 +1007,9 @@ def scan(
                 continue
 
             query, regex = condition.query, condition.regex
-            logging.info(f"[Scan] {provider.name}: start to search new keys with query: {query}, regex: {regex}")
+            logging.info(
+                f"[Scan] {provider.name}: start to search new keys with query: {query or regex}, regex: {regex}"
+            )
 
             parts = recall(
                 regex=regex,
@@ -1273,6 +1247,11 @@ def chat(
                 # read response body
                 try:
                     message = e.read().decode("utf8")
+
+                    # not a json string, use reason instead
+                    if not message.startswith("{") or not message.endswith("}"):
+                        message = e.reason
+
                     output(code, message)
                 except:
                     output(code, e.reason)
@@ -1411,61 +1390,6 @@ def scan_openai_keys(
     )
 
 
-def scan_groq_keys(
-    session: str,
-    with_api: bool = False,
-    page_num: int = -1,
-    fast: bool = False,
-    skip: bool = False,
-    thread_num: int = None,
-    workspace: str = "",
-) -> None:
-    query = '"WGdyb3FY"' if with_api else ""
-    regex = r"gsk_[a-zA-Z0-9]{20}WGdyb3FY[a-zA-Z0-9]{24}"
-
-    conditions = [Condition(query=query, regex=regex)]
-    provider = GroqProvider(conditions=conditions, default_model="llama3-8b-8192")
-
-    return scan(
-        session=session,
-        provider=provider,
-        with_api=with_api,
-        page_num=page_num,
-        thread_num=thread_num,
-        fast=fast,
-        skip=skip,
-        workspace=workspace,
-    )
-
-
-def scan_deepseek_keys(
-    session: str,
-    with_api: bool = False,
-    page_num: int = -1,
-    fast: bool = False,
-    skip: bool = False,
-    thread_num: int = None,
-    workspace: str = "",
-) -> None:
-    # TODO: optimize query syntax for github api
-    query = '"deepseek" AND "sk-"' if with_api else ""
-    regex = r"sk-[a-z0-9]{12}4[a-z0-9]{19}"
-
-    conditions = [Condition(query=query, regex=regex)]
-    provider = DeepseekProvider(conditions=conditions, default_model="deepseek-chat")
-
-    return scan(
-        session=session,
-        provider=provider,
-        with_api=with_api,
-        page_num=page_num,
-        thread_num=thread_num,
-        fast=fast,
-        skip=skip,
-        workspace=workspace,
-    )
-
-
 def scan_doubao_keys(
     session: str,
     with_api: bool = False,
@@ -1483,37 +1407,6 @@ def scan_doubao_keys(
     regex = r"[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}"
     conditions = [Condition(query=query, regex=regex)]
     provider = DoubaoProvider(conditions=conditions, default_model="doubao-pro-32k")
-
-    return scan(
-        session=session,
-        provider=provider,
-        with_api=with_api,
-        page_num=page_num,
-        thread_num=thread_num,
-        fast=fast,
-        skip=skip,
-        workspace=workspace,
-    )
-
-
-def scan_moonshot_keys(
-    session: str,
-    with_api: bool = False,
-    page_num: int = -1,
-    fast: bool = False,
-    skip: bool = False,
-    thread_num: int = None,
-    workspace: str = "",
-) -> None:
-    # TODO: optimize query syntax for github api
-    query = '/sk-[a-zA-Z0-9]{48}/ AND "https://api.moonshot.cn/v1"'
-    if with_api:
-        query = '"https://api.moonshot.cn/v1" AND "sk-"'
-
-    regex = r"sk-[a-zA-Z0-9]{48}"
-
-    conditions = [Condition(query=query, regex=regex)]
-    provider = MoonshotProvider(conditions=conditions, default_model="moonshot-v1-8k")
 
     return scan(
         session=session,
@@ -1789,7 +1682,7 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.bytedance:
+    if args.doubao:
         scan_doubao_keys(
             session=session,
             with_api=args.rest,
@@ -1811,41 +1704,8 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.deepseek:
-        scan_deepseek_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.num,
-            thread_num=args.thread,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
-
     if args.gemini:
         scan_gemini_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.num,
-            thread_num=args.thread,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
-
-    if args.groq:
-        scan_groq_keys(
-            session=session,
-            with_api=args.rest,
-            page_num=args.num,
-            thread_num=args.thread,
-            fast=args.fast,
-            skip=args.elide,
-            workspace=args.workspace,
-        )
-
-    if args.moonshot:
-        scan_moonshot_keys(
             session=session,
             with_api=args.rest,
             page_num=args.num,
@@ -1894,15 +1754,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-b",
-        "--bytedance",
-        dest="bytedance",
-        action="store_true",
-        default=False,
-        help="scan doubao api keys",
-    )
-
-    parser.add_argument(
         "-c",
         "--claude",
         dest="claude",
@@ -1913,11 +1764,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-d",
-        "--deepseek",
-        dest="deepseek",
+        "--doubao",
+        dest="doubao",
         action="store_true",
         default=False,
-        help="scan deepseek api keys",
+        help="scan doubao api keys",
     )
 
     parser.add_argument(
@@ -1945,24 +1796,6 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan gemini api keys",
-    )
-
-    parser.add_argument(
-        "-l",
-        "--groq",
-        dest="groq",
-        action="store_true",
-        default=False,
-        help="scan groq api keys",
-    )
-
-    parser.add_argument(
-        "-m",
-        "--moonshot",
-        dest="moonshot",
-        action="store_true",
-        default=False,
-        help="scan moonshot api keys",
     )
 
     parser.add_argument(
