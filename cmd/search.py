@@ -89,6 +89,67 @@ class KeyDetail(object):
         return self.key == other.key
 
 
+@dataclass
+class Service(object):
+    # server address
+    address: str = ""
+
+    # application name or id
+    endpoint: str = ""
+
+    # api token
+    key: str = ""
+
+    # model name
+    model: str = ""
+
+    def __hash__(self):
+        return hash((self.address, self.endpoint, self.key, self.model))
+
+    def __eq__(self, other):
+        if not isinstance(other, Service):
+            return False
+
+        return (
+            self.address == other.address
+            and self.endpoint == other.endpoint
+            and self.key == other.key
+            and self.model == other.model
+        )
+
+    def serialize(self) -> str:
+        if not self.address and not self.endpoint and not self.model:
+            return self.key
+
+        data = dict()
+        if self.address:
+            data["address"] = self.address
+        if self.endpoint:
+            data["endpoint"] = self.endpoint
+        if self.key:
+            data["key"] = self.key
+        if self.model:
+            data["model"] = self.model
+
+        return "" if not data else json.dumps(data)
+
+    @classmethod
+    def deserialize(cls, text: str) -> "Service":
+        if not text:
+            return None
+
+        try:
+            item = json.loads(text)
+            return cls(
+                address=item.get("address", ""),
+                endpoint=item.get("endpoint", ""),
+                key=item.get("key", ""),
+                model=item.get("model", ""),
+            )
+        except:
+            return cls(key=text)
+
+
 @unique
 class ErrorReason(Enum):
     # no error
@@ -175,11 +236,9 @@ class Provider(object):
             raise ValueError("default_model cannot be empty")
 
         base_url = trim(base_url)
-        if not re.match(r"^https?:\/\/([\w\-_]+\.[\w\-_]+)+", base_url):
-            raise ValueError("base_url must be a valid url")
 
         # see: https://stackoverflow.com/questions/10893374/python-confusions-with-urljoin
-        if not base_url.endswith("/"):
+        if base_url and not base_url.endswith("/"):
             base_url += "/"
 
         # provider name
@@ -238,7 +297,7 @@ class Provider(object):
         # additional parameters for provider
         self.extras = kwargs
 
-    def _get_headers(self, token: str) -> dict:
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
         raise NotImplementedError
 
     def _judge(self, code: int, message: str) -> CheckResult:
@@ -261,16 +320,24 @@ class Provider(object):
 
         return CheckResult.fail(ErrorReason.UNKNOWN)
 
-    def check(self, token: str) -> CheckResult:
-        url = urllib.parse.urljoin(self.base_url, self.completion_path)
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        url, regex = trim(address), r"^https?://([\w\-_]+\.[\w\-_]+)+"
+        if not url and re.match(regex, self.base_url, flags=re.I):
+            url = urllib.parse.urljoin(self.base_url, self.completion_path)
+
+        if not re.match(regex, url, flags=re.I):
+            logging.error(f"invalid url: {url}, skip to check")
+            return CheckResult.fail(ErrorReason.BAD_REQUEST)
+
         headers = self._get_headers(token=token)
         if not headers:
             return CheckResult.fail(ErrorReason.BAD_REQUEST)
 
-        code, message = chat(url=url, headers=headers, model=self.default_model)
+        model = trim(model) or self.default_model
+        code, message = chat(url=url, headers=headers, model=model)
         return self._judge(code=code, message=message)
 
-    def list_models(self, token: str) -> list[str]:
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
         raise NotImplementedError
 
 
@@ -290,12 +357,18 @@ class OpenAILikeProvider(Provider):
 
         super().__init__(name, base_url, completion_path, model_path, default_model, conditions, **kwargs)
 
-    def _get_headers(self, token: str) -> dict:
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
         token = trim(token)
         if not token:
             return None
 
-        return {"content-type": "application/json", "authorization": f"Bearer {token}", "user-agent": USER_AGENT}
+        if not isinstance(additional, dict):
+            additional = {}
+
+        headers = {"content-type": "application/json", "authorization": f"Bearer {token}", "user-agent": USER_AGENT}
+        headers.update(additional)
+
+        return headers
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 200:
@@ -316,12 +389,11 @@ class OpenAILikeProvider(Provider):
 
         return super()._judge(code, message)
 
-    def list_models(self, token: str) -> list[str]:
-        headers = self._get_headers(token=token)
-        if not headers or not self.model_path:
+    def _fetch_models(self, url: str, headers: dict) -> list[str]:
+        url = trim(url)
+        if not url:
             return []
 
-        url = urllib.parse.urljoin(self.base_url, self.model_path)
         content = http_get(url=url, headers=headers, interval=1)
         if not content:
             return []
@@ -331,6 +403,14 @@ class OpenAILikeProvider(Provider):
             return [x.get("id", "") for x in result.get("data", [])]
         except:
             return []
+
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
+        headers = self._get_headers(token=token)
+        if not headers or not self.base_url or not self.model_path:
+            return []
+
+        url = urllib.parse.urljoin(self.base_url, self.model_path)
+        return self._fetch_models(url=url, headers=headers)
 
 
 class OpenAIProvider(OpenAILikeProvider):
@@ -363,6 +443,35 @@ class DeepseekProvider(OpenAILikeProvider):
         return super()._judge(code, message)
 
 
+class DoubaoProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "doubao-pro-32k"
+        base_url = "https://ark.cn-beijing.volces.com"
+
+        super().__init__(
+            name="doubao",
+            base_url=base_url,
+            default_model=default_model,
+            conditions=conditions,
+            completion_path="/api/v3/chat/completions",
+            model_path="/api/v3/models",
+            model_pattern=r"ep-[0-9]{14}-[a-z0-9]{5}",
+        )
+
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 404:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super()._judge(code, message)
+
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        model = trim(model)
+        if not model:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super().check(token=token, address=address, endpoint=endpoint, model=model)
+
+
 class MoonshotProvider(OpenAILikeProvider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
         default_model = trim(default_model) or "moonshot-v1-8k"
@@ -371,19 +480,68 @@ class MoonshotProvider(OpenAILikeProvider):
         super().__init__("moonshot", base_url, default_model, conditions)
 
 
+class QianFanProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "ernie-4.0-8k-latest"
+        base_url = "https://qianfan.baidubce.com"
+
+        super().__init__(
+            name="qianfan",
+            base_url=base_url,
+            default_model=default_model,
+            conditions=conditions,
+            completion_path="/v2/chat/completions",
+            model_path="/v2/models",
+            endpoint_pattern=r"[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}",
+        )
+
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 404:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super()._judge(code, message)
+
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        headers = self._get_headers(token=token)
+        if not headers:
+            return CheckResult.fail(ErrorReason.BAD_REQUEST)
+
+        endpoint = trim(endpoint)
+        if endpoint:
+            headers["appid"] = endpoint
+
+        model = trim(model) or self.default_model
+        url = urllib.parse.urljoin(self.base_url, self.completion_path)
+
+        code, message = chat(url=url, headers=headers, model=model)
+        return self._judge(code=code, message=message)
+
+    def list_models(self, token, address="", endpoint=""):
+        headers = self._get_headers(token=token)
+        if not headers:
+            return []
+
+        endpoint = trim(endpoint)
+        if endpoint:
+            headers["appid"] = endpoint
+
+        url = urllib.parse.urljoin(self.base_url, self.model_path)
+        return self._fetch_models(url=url, headers=headers)
+
+
 class AnthropicProvider(Provider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
         default_model = trim(default_model) or "claude-3-5-sonnet-latest"
         super().__init__("anthropic", "https://api.anthropic.com", "/v1/messages", "", default_model, conditions)
 
-    def _get_headers(self, token: str) -> dict:
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
         token = trim(token)
         if not token:
             return None
 
         return {"content-type": "application/json", "x-api-key": token, "anthropic-version": "2023-06-01"}
 
-    def check(self, token: str) -> CheckResult:
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
         token = trim(token)
         if token.startswith("sk-ant-sid01-"):
             logging.info(f"found session key: {token}, check it with organizations api")
@@ -420,7 +578,7 @@ class AnthropicProvider(Provider):
             except:
                 return CheckResult.fail(ErrorReason.INVALID_KEY)
 
-        return super().check(token)
+        return super().check(token=token, address=address, endpoint=endpoint, model=model)
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 400 and re.findall(r"Your credit balance is too low", trim(message), flags=re.I):
@@ -430,7 +588,7 @@ class AnthropicProvider(Provider):
 
         return super()._judge(code, message)
 
-    def list_models(self, token) -> list[str]:
+    def list_models(self, token, address: str = "", endpoint: str = "") -> list[str]:
         token = trim(token)
         if not token:
             return []
@@ -448,6 +606,74 @@ class AnthropicProvider(Provider):
         ]
 
 
+class AzureOpenAIProvider(OpenAILikeProvider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "gpt-4o-mini"
+        super().__init__(
+            name="azure",
+            base_url="",
+            completion_path="/chat/completions",
+            model_path="/models",
+            default_model=default_model,
+            conditions=conditions,
+            address_pattern=r"https://[a-zA-Z0-9_\-\.]+.openai.azure.com/openai/",
+        )
+
+        self.api_version = "2024-10-21"
+
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
+        token = trim(token)
+        if not token:
+            return None
+
+        return {"api-key": token, "content-type": "application/json", "user-agent": USER_AGENT}
+
+    def _judge(self, code: int, message: str) -> CheckResult:
+        if code == 404:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super()._judge(code, message)
+
+    def __generate_address(self, address: str = "", endpoint: str = "", model: str = "") -> str:
+        address = trim(address).removesuffix("/")
+        if not re.match(r"^https?://([\w\-_]+\.[\w\-_]+)+", address, flags=re.I):
+            return ""
+
+        if re.findall(
+            r"(xxx|YOUR_RESOURCE_NAME|your_service|YOUR_AZURE_OPENAI_NAME|YOUR-INSTANCE|YOUR_ENDPOINT_NAME|RESOURCE_NAME|YOURAOAIINSTANCE|yourname|YOUR_NAME|YOUR_AOAI_SERVICE|COMPANY|your-deployment-name|YOUR_AOI_SERVICE_NAME|YOUR_AI_ENDPOINT_NAME|YOUR-APP|YOUR-RESOURCE-NAME).openai.azure.com",
+            address,
+            flags=re.I,
+        ):
+            return ""
+
+        model = trim(model) or self.default_model
+        return f"{address}/deployments/{model}/{self.completion_path}?api-version={self.api_version}"
+
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        token = trim(token)
+        if not token:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        url = self.__generate_address(address=address, endpoint=endpoint, model=model)
+        if not url:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        return super().check(token=token, address=url, endpoint=endpoint, model=model)
+
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
+        domain = trim(address).removesuffix("/")
+        if not re.match(r"^https?://([\w\-_]+\.[\w\-_]+)+", domain, flags=re.I):
+            logging.error(f"invalid domain: {domain}, skip to list models")
+            return []
+
+        headers = self._get_headers(token=token)
+        if not headers or not self.model_path:
+            return []
+
+        url = f"{domain}/{self.model_path}?api-version={self.api_version}"
+        return self._fetch_models(url=url, headers=headers)
+
+
 class GeminiProvider(Provider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
         default_model = trim(default_model) or "gemini-exp-1206"
@@ -456,7 +682,7 @@ class GeminiProvider(Provider):
 
         super().__init__("gemini", base_url, sub_path, sub_path, default_model, conditions)
 
-    def _get_headers(self, token: str) -> dict:
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
         return {"content-type": "application/json"}
 
     def _judge(self, code: int, message: str) -> CheckResult:
@@ -472,18 +698,19 @@ class GeminiProvider(Provider):
 
         return super()._judge(code, message)
 
-    def check(self, token: str) -> CheckResult:
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
         token = trim(token)
         if not token:
             return False
 
-        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{self.default_model}:generateContent?key={token}"
-        params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
+        model = trim(model) or self.default_model
+        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{model}:generateContent?key={token}"
 
+        params = {"contents": [{"role": "user", "parts": [{"text": DEFAULT_QUESTION}]}]}
         code, message = chat(url=url, headers=self._get_headers(token=token), params=params)
         return self._judge(code=code, message=message)
 
-    def list_models(self, token: str) -> list[str]:
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
         token = trim(token)
         if not token:
             return []
@@ -665,33 +892,84 @@ def batch_search_code(
 
 
 @lru_cache(maxsize=2000)
-def extract(url: str, regex: str, retries: int = 3) -> list[str]:
-    if not isinstance(url, str) or not isinstance(regex, str):
+def collect(
+    url: str,
+    key_pattern: str,
+    retries: int = 3,
+    address_pattern: str = "",
+    endpoint_pattern: str = "",
+    model_pattern: str = "",
+) -> list[Service]:
+    if not isinstance(url, str) or not isinstance(key_pattern, str):
         return []
 
     content = http_get(url=url, retries=retries, interval=1)
+
+    # extract keys from content
+    key_pattern = trim(key_pattern)
+    keys = extract(text=content, regex=key_pattern)
+    if not keys:
+        return []
+
+    # extract api addresses from content
+    address_pattern = trim(address_pattern)
+    addresses = extract(text=content, regex=address_pattern)
+    if address_pattern and not addresses:
+        return []
+    if not addresses:
+        addresses.append("")
+
+    # extract api endpoints from content
+    endpoint_pattern = trim(endpoint_pattern)
+    endpoints = extract(text=content, regex=endpoint_pattern)
+    if endpoint_pattern and not endpoints:
+        return []
+    if not endpoints:
+        endpoints.append("")
+
+    # extract models from content
+    model_pattern = trim(model_pattern)
+    models = extract(text=content, regex=model_pattern)
+    if model_pattern and not models:
+        return []
+    if not models:
+        models.append("")
+
+    candidates = list()
+
+    # combine keys, addresses and endpoints TODO: optimize this part
+    for key, address, endpoint, model in itertools.product(keys, addresses, endpoints, models):
+        candidates.append(Service(address=address, endpoint=endpoint, key=key, model=model))
+
+    return candidates
+
+
+def extract(text: str, regex: str) -> list[str]:
+    content, pattern = trim(text), trim(regex)
+    if not content or not pattern:
+        return []
+
+    items = set()
     try:
-        groups = re.findall(regex, content, flags=re.I)
-        items = set()
+        groups = re.findall(pattern, content)
         for x in groups:
-            texts = list()
+            words = list()
             if isinstance(x, str):
-                texts.append(x)
+                words.append(x)
             elif isinstance(x, (tuple, list)):
-                texts.extend(list(x))
+                words.extend(list(x))
             else:
                 logging.error(f"unknown type: {type(x)}, value: {x}. please optimize your regex")
                 continue
 
-            for text in texts:
-                key = trim(text)
+            for word in words:
+                key = trim(word)
                 if key:
                     items.add(key)
-
-        return list(items)
     except:
         logging.error(traceback.format_exc())
-        return []
+
+    return list(items)
 
 
 def scan(
@@ -704,6 +982,18 @@ def scan(
     skip: bool = False,
     workspace: str = "",
 ) -> None:
+    def persist(services: list[Service], filepath: str) -> None:
+        filepath = trim(filepath)
+        if not filepath or not services:
+            logging.error("services or filepath cannot be empty")
+            return
+
+        lines = [x.serialize() for x in services if x]
+        if not write_file(directory=filepath, lines=lines):
+            logging.error(f"[Scan] {provider.name}: failed to save keys to file: {filepath}, keys: {lines}")
+        else:
+            logging.info(f"[Scan] {provider.name}: saved {len(lines)} keys to file: {filepath}")
+
     if not isinstance(provider, Provider):
         return
 
@@ -719,10 +1009,10 @@ def scan(
     material_keys_file = os.path.join(directory, provider.material_filename)
     links_file = os.path.join(directory, provider.links_filename)
 
-    records = set()
+    records: set[Service] = set()
     if os.path.exists(valid_keys_file) and os.path.isfile(valid_keys_file):
         # load exists valid keys
-        records.update(read_file(filepath=valid_keys_file))
+        records.update(load_exist_keys(filepath=valid_keys_file))
         logging.info(f"[Scan] {provider.name}: loaded {len(records)} exists keys from file {valid_keys_file}")
 
         # backup up exists file with current time
@@ -735,10 +1025,11 @@ def scan(
 
     if os.path.exists(material_keys_file) and os.path.isfile(material_keys_file):
         # load potential keys from material file
-        records.update(read_file(filepath=material_keys_file))
+        records.update(load_exist_keys(filepath=material_keys_file))
 
     if not skip and provider.conditions:
-        new_keys, start_time = set(), time.time()
+        candidates: set[Service] = set()
+        start_time = time.time()
         for condition in provider.conditions:
             if not isinstance(condition, Condition):
                 continue
@@ -746,7 +1037,7 @@ def scan(
             query, regex = condition.query, condition.regex
             logging.info(f"[Scan] {provider.name}: start to search new keys with query: {query}, regex: {regex}")
 
-            candidates = recall(
+            parts = recall(
                 regex=regex,
                 session=session,
                 query=query,
@@ -755,106 +1046,115 @@ def scan(
                 thread_num=thread_num,
                 fast=fast,
                 links_file=links_file,
+                extra_params=provider.extras,
             )
 
-            if candidates:
-                new_keys.update(candidates)
+            if parts:
+                candidates.update(parts)
 
         # merge new keys with exists keys
-        records.update(new_keys)
+        records.update(candidates)
 
         cost = time.time() - start_time
-        count, total = len(provider.conditions), len(new_keys)
+        count, total = len(provider.conditions), len(candidates)
         logging.info(f"[Scan] {provider.name}: cost {cost:.2f}s to search {count} conditions, got {total} new keys")
 
     if not records:
         logging.warning(f"[Scan] {provider.name}: cannot extract any candidate with conditions: {provider.conditions}")
         return
 
-    items, statistics = list(records), dict()
+    items, caches = [], []
+    for record in records:
+        if not isinstance(record, Service) or not record.key:
+            continue
+
+        items.append([record.key, record.address, record.endpoint, record.model])
+        caches.append(record)
 
     logging.info(f"[Scan] {provider.name}: start to verify {len(items)} potential keys")
-    masks = multi_thread_run(func=provider.check, tasks=items, thread_num=thread_num)
+    masks: list[CheckResult] = multi_thread_run(func=provider.check, tasks=items, thread_num=thread_num)
 
     # remove invalid keys and ave all potential keys to material file
-    material_keys = [items[i] for i in range(len(masks)) if masks[i].reason != ErrorReason.INVALID_KEY]
-    if material_keys and not write_file(directory=material_keys_file, lines=material_keys):
-        logging.error(
-            f"[Scan] {provider.name}: failed to save potential keys to file: {material_keys_file}, keys: {material_keys}"
-        )
+    materials: list[Service] = [caches[i] for i in range(len(masks)) if masks[i].reason != ErrorReason.INVALID_KEY]
+    if materials:
+        persist(services=materials, filepath=material_keys_file)
+
+    # save candidates and avaiable status
+    statistics = dict()
 
     # can be used keys
-    valid_keys = [items[i] for i in range(len(masks)) if masks[i].available]
-    if not valid_keys:
+    valid_services: list[Service] = [caches[i] for i in range(len(masks)) if masks[i].available]
+    if not valid_services:
         logging.warning(f"[Scan] {provider.name}: cannot found any key with conditions: {provider.conditions}")
     else:
-        if not write_file(directory=valid_keys_file, lines=valid_keys):
-            logging.error(f"[Scan] {provider.name}: failed to save keys to file: {valid_keys_file}, keys: {valid_keys}")
-        else:
-            logging.info(
-                f"[Scan] {provider.name}: found {len(valid_keys)} valid keys, save them to file: {valid_keys_file}"
-            )
+        persist(services=valid_services, filepath=valid_keys_file)
 
-        statistics.update({k: True for k in valid_keys})
+        statistics.update({s: True for s in valid_services})
 
     # no quota keys
-    no_quota_keys = [
-        items[i] for i in range(len(masks)) if not masks[i].available and masks[i].reason == ErrorReason.NO_QUOTA
+    no_quota_services: list[Service] = [
+        caches[i] for i in range(len(masks)) if not masks[i].available and masks[i].reason == ErrorReason.NO_QUOTA
     ]
-    if no_quota_keys:
-        statistics.update({k: False for k in no_quota_keys})
+    if no_quota_services:
+        statistics.update({s: False for s in no_quota_services})
 
         # save no quota keys to file
         no_quota_keys_file = os.path.join(directory, provider.no_quota_filename)
-        if not write_file(directory=no_quota_keys_file, lines=no_quota_keys):
-            logging.error(
-                f"[Scan] {provider.name}: failed to save no quota keys to file: {no_quota_keys_file}, keys: {no_quota_keys}"
-            )
-        else:
-            logging.info(
-                f"[Scan] {provider.name}: found {len(no_quota_keys)} no quota keys, save them to file: {no_quota_keys_file}"
-            )
+        persist(services=no_quota_services, filepath=no_quota_keys_file)
 
     # not expired keys but wait to check again keys
-    wait_check_keys = [
-        items[i]
+    wait_check_services: list[Service] = [
+        caches[i]
         for i in range(len(masks))
         if not masks[i].available and masks[i].reason in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL]
     ]
-    if wait_check_keys:
-        statistics.update({k: False for k in wait_check_keys})
+    if wait_check_services:
+        statistics.update({s: False for s in wait_check_services})
 
         # save wait check keys to file
         wait_check_keys_file = os.path.join(directory, provider.wait_check_filename)
-        if not write_file(directory=wait_check_keys_file, lines=wait_check_keys):
-            logging.error(
-                f"[Scan] {provider.name}: failed to save wait check keys to file: {wait_check_keys_file}, keys: {wait_check_keys}"
-            )
-        else:
-            logging.info(
-                f"[Scan] {provider.name}: found {len(wait_check_keys)} wait check keys, save them to file: {wait_check_keys_file}"
-            )
+        persist(services=wait_check_services, filepath=wait_check_keys_file)
 
     # list supported models for each key
-    last_keys = list(statistics.keys())
-    if not last_keys:
+    services, tasks = [], []
+    for service in statistics.keys():
+        tasks.append([service.key, service.address, service.endpoint])
+        services.append(service)
+
+    if not tasks:
         logging.error(f"[Scan] {provider.name}: no keys to list models")
         return
 
-    models = multi_thread_run(func=provider.list_models, tasks=last_keys, thread_num=thread_num)
-    data = {
-        last_keys[i]: {
-            "available": statistics.get(last_keys[i]),
+    data = dict()
+    models = multi_thread_run(func=provider.list_models, tasks=tasks, thread_num=thread_num)
+
+    for i in range(len(tasks)):
+        service: Service = services[i]
+        item = {
+            "available": statistics.get(service),
             "models": (models[i] if models else []) or [],
         }
-        for i in range(len(last_keys))
-    }
+
+        if service.address:
+            item["address"] = service.address
+        if service.endpoint:
+            item["endpoint"] = service.endpoint
+
+        data[service.key] = item
 
     summary_path = os.path.join(directory, provider.summary_filename)
     if write_file(directory=summary_path, lines=json.dumps(data, ensure_ascii=False, indent=4)):
-        logging.info(f"[Scan] {provider.name}: saved {len(last_keys)} keys summary to file: {summary_path}")
+        logging.info(f"[Scan] {provider.name}: saved {len(services)} keys summary to file: {summary_path}")
     else:
         logging.error(f"[Scan] {provider.name}: failed to save keys summary to file: {summary_path}, data: {data}")
+
+
+def load_exist_keys(filepath: str) -> set[Service]:
+    lines = read_file(filepath=filepath)
+    if not lines:
+        return set()
+
+    return set([Service.deserialize(text=line) for line in lines])
 
 
 def recall(
@@ -866,7 +1166,8 @@ def recall(
     thread_num: int = None,
     fast: bool = False,
     links_file: str = "",
-) -> list[str]:
+    extra_params: dict = None,
+) -> list[Service]:
     regex = trim(regex)
     if not regex:
         logging.error(f"[Recall] skip to recall due to regex is empty")
@@ -884,7 +1185,11 @@ def recall(
             links.add(text)
 
     session = trim(session)
-    query = trim(query) or f"/{regex}/"
+    query = trim(query)
+    if not query:
+        text = regex.replace("/", "\\/")
+        query = f"/{text}/"
+
     if session:
         sources = batch_search_code(
             session=session,
@@ -907,8 +1212,15 @@ def recall(
 
     logging.info(f"[Recall] start to extract candidates from {len(links)} links")
 
-    tasks = [[x, regex, 3] for x in links if x]
-    result = multi_thread_run(func=extract, tasks=tasks, thread_num=thread_num)
+    if not isinstance(extra_params, dict):
+        extra_params = dict()
+
+    address_pattern = extra_params.get("address_pattern", "")
+    endpoint_pattern = extra_params.get("endpoint_pattern", "")
+    model_pattern = extra_params.get("model_pattern", "")
+
+    tasks = [[x, regex, 3, address_pattern, endpoint_pattern, model_pattern] for x in links if x]
+    result = multi_thread_run(func=collect, tasks=tasks, thread_num=thread_num)
 
     return list(itertools.chain.from_iterable(result))
 
@@ -971,7 +1283,8 @@ def chat(
             if code in NO_RETRY_ERROR_CODES:
                 break
         except Exception:
-            output(code, traceback.format_exc())
+            # output(code, traceback.format_exc())
+            pass
 
         attempt += 1
         time.sleep(1)
@@ -1009,6 +1322,37 @@ def scan_anthropic_keys(
     )
 
 
+def scan_azure_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    # TODO: optimize query syntax for github api
+    query = "/https:\/\/[a-zA-Z0-9_\-\.]+.openai.azure.com\/openai\// AND /(?-i)[a-z0-9]{32}/"
+    if with_api:
+        query = "openai.azure.com/openai/deployments"
+
+    regex = r"[a-z0-9]{32}"
+    conditions = [Condition(query=query, regex=regex)]
+    default_model = "gpt-4o-mini"
+    provider = AzureOpenAIProvider(conditions=conditions, default_model=default_model)
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
 def scan_gemini_keys(
     session: str,
     with_api: bool = False,
@@ -1023,7 +1367,6 @@ def scan_gemini_keys(
         query = '"AIzaSy" AND "gemini"'
 
     regex = r"AIzaSy[a-zA-Z0-9_\-]{33}"
-
     conditions = [Condition(query=query, regex=regex)]
     default_model = "gemini-exp-1206"
     provider = GeminiProvider(conditions=conditions, default_model=default_model)
@@ -1123,6 +1466,36 @@ def scan_deepseek_keys(
     )
 
 
+def scan_doubao_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    # TODO: optimize query syntax for github api
+    query = '"https://ark.cn-beijing.volces.com" AND /[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}/'
+    if with_api:
+        query = '"https://ark.cn-beijing.volces.com" AND "ep-"'
+
+    regex = r"[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}"
+    conditions = [Condition(query=query, regex=regex)]
+    provider = DoubaoProvider(conditions=conditions, default_model="doubao-pro-32k")
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
 def scan_moonshot_keys(
     session: str,
     with_api: bool = False,
@@ -1151,6 +1524,83 @@ def scan_moonshot_keys(
         fast=fast,
         skip=skip,
         workspace=workspace,
+    )
+
+
+def scan_qianfan_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    query = "bce-v3/ALTAK-" if with_api else "/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
+    regex = r"bce-v3/ALTAK-[a-zA-Z0-9]{21}/[a-z0-9]{40}"
+    conditions = [Condition(query=query, regex=regex)]
+    provider = QianFanProvider(conditions=conditions, default_model="ernie-4.0-8k-latest")
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
+def scan_others(args: argparse.Namespace) -> None:
+    if not args or not isinstance(args, argparse.Namespace):
+        return
+
+    name = trim(args.pn)
+    if not name:
+        logging.error(f"provider name cannot be empty")
+        return
+
+    default_model = trim(args.pm)
+    if not default_model:
+        logging.error(f"model name as default cannot be empty")
+        return
+
+    base_url = trim(args.pb)
+    if not re.match(r"^https?://([\w\-_]+\.[\w\-_]+)+", base_url):
+        logging.error(f"invalid base url: {base_url}")
+        return
+
+    pattern = trim(args.pp)
+    if not pattern:
+        logging.error(f"pattern for extracting keys cannot be empty")
+        return
+
+    query = trim(args.pq)
+    if args.rest and not query:
+        logging.error(f"query cannot be empty when using rest api")
+        return
+
+    conditions = [Condition(query=query, regex=pattern)]
+    provider = OpenAILikeProvider(
+        name=name,
+        base_url=base_url,
+        default_model=default_model,
+        conditions=conditions,
+        completion_path=args.pc,
+        model_path=args.pl,
+    )
+
+    return scan(
+        session=args.session,
+        provider=provider,
+        with_api=args.rest,
+        page_num=args.num,
+        thread_num=args.thread,
+        fast=args.fast,
+        skip=args.elide,
+        workspace=args.workspace,
     )
 
 
@@ -1325,61 +1775,32 @@ def write_file(directory: str, lines: str | list, overwrite: bool = True) -> boo
         return False
 
 
-def scan_others(args: argparse.Namespace) -> None:
-    if not args or not isinstance(args, argparse.Namespace):
-        return
-
-    name = trim(args.pn)
-    if not name:
-        logging.error(f"provider name cannot be empty")
-        return
-
-    model = trim(args.pm)
-    if not model:
-        logging.error(f"model name to be checked cannot be empty")
-        return
-
-    base_url = trim(args.pb)
-    if not re.match(r"^https?://([\w\-_]+\.[\w\-_]+)+", base_url):
-        logging.error(f"invalid base url: {base_url}")
-        return
-
-    pattern = trim(args.pp)
-    if not pattern:
-        logging.error(f"pattern for extracting keys cannot be empty")
-        return
-
-    query = trim(args.pq)
-    if args.rest and not query:
-        logging.error(f"query cannot be empty when using rest api")
-        return
-
-    conditions = [Condition(query=query, regex=pattern)]
-    provider = OpenAILikeProvider(
-        name=name,
-        base_url=base_url,
-        default_model=model,
-        conditions=conditions,
-        completion_path=args.pc,
-        model_path=args.pl,
-    )
-
-    return scan(
-        session=args.session,
-        provider=provider,
-        with_api=args.rest,
-        page_num=args.num,
-        thread_num=args.thread,
-        fast=args.fast,
-        skip=args.elide,
-        workspace=args.workspace,
-    )
-
-
 def main(args: argparse.Namespace) -> None:
     session = trim(args.session)
 
-    if args.all or args.claude:
+    if args.azure:
+        scan_azure_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.bytedance:
+        scan_doubao_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.claude:
         scan_anthropic_keys(
             session=session,
             with_api=args.rest,
@@ -1390,7 +1811,7 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.all or args.deepseek:
+    if args.deepseek:
         scan_deepseek_keys(
             session=session,
             with_api=args.rest,
@@ -1401,7 +1822,7 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.all or args.gemini:
+    if args.gemini:
         scan_gemini_keys(
             session=session,
             with_api=args.rest,
@@ -1412,7 +1833,7 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.all or args.llama:
+    if args.groq:
         scan_groq_keys(
             session=session,
             with_api=args.rest,
@@ -1423,7 +1844,7 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.all or args.moonshot:
+    if args.moonshot:
         scan_moonshot_keys(
             session=session,
             with_api=args.rest,
@@ -1434,8 +1855,19 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
-    if args.all or args.openai:
+    if args.openai:
         scan_openai_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
+    if args.qianfan:
+        scan_qianfan_keys(
             session=session,
             with_api=args.rest,
             page_num=args.num,
@@ -1454,11 +1886,20 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-a",
-        "--all",
-        dest="all",
+        "--azure",
+        dest="azure",
         action="store_true",
         default=False,
-        help="execute all supported scan tasks",
+        help="scan azure's openai api keys",
+    )
+
+    parser.add_argument(
+        "-b",
+        "--bytedance",
+        dest="bytedance",
+        action="store_true",
+        default=False,
+        help="scan doubao api keys",
     )
 
     parser.add_argument(
@@ -1508,8 +1949,8 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-l",
-        "--llama",
-        dest="llama",
+        "--groq",
+        dest="groq",
         action="store_true",
         default=False,
         help="scan groq api keys",
@@ -1540,6 +1981,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="scan openai api keys",
+    )
+
+    parser.add_argument(
+        "-q",
+        "--qianfan",
+        dest="qianfan",
+        action="store_true",
+        default=False,
+        help="scan qianfan api keys",
     )
 
     parser.add_argument(
