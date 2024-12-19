@@ -365,7 +365,12 @@ class OpenAILikeProvider(Provider):
         if not isinstance(additional, dict):
             additional = {}
 
-        headers = {"content-type": "application/json", "authorization": f"Bearer {token}", "user-agent": USER_AGENT}
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "user-agent": USER_AGENT,
+        }
         headers.update(additional)
 
         return headers
@@ -379,12 +384,14 @@ class OpenAILikeProvider(Provider):
             if code == 403:
                 if re.findall(r"model_not_found", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_MODEL)
+                elif re.findall(r"unauthorized", message, flags=re.I):
+                    return CheckResult.fail(ErrorReason.INVALID_KEY)
                 elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
                 elif re.findall(r"exceeded_current_quota_error", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
             elif code == 429:
-                if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值", message, flags=re.I):
+                if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值|recharge", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
                 elif re.findall(r"rate_limit_exceeded", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.RATE_LIMITED)
