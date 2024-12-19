@@ -518,12 +518,17 @@ class AnthropicProvider(Provider):
         if not token:
             return None
 
-        return {"content-type": "application/json", "x-api-key": token, "anthropic-version": "2023-06-01"}
+        return {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "x-api-key": token,
+            "anthropic-version": "2023-06-01",
+        }
 
     def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
         token = trim(token)
         if token.startswith("sk-ant-sid01-"):
-            logging.info(f"found session key: {token}, check it with organizations api")
+            logging.debug(f"found session key: {token}, check it with organizations api")
 
             url = "https://api.claude.ai/api/organizations"
             headers = {
@@ -560,7 +565,8 @@ class AnthropicProvider(Provider):
         return super().check(token=token, address=address, endpoint=endpoint, model=model)
 
     def _judge(self, code: int, message: str) -> CheckResult:
-        if code == 400 and re.findall(r"Your credit balance is too low", trim(message), flags=re.I):
+        message = trim(message)
+        if re.findall(r"credit balance is too low|Billing|purchase", message, flags=re.I):
             return CheckResult.fail(ErrorReason.NO_QUOTA)
         elif code == 404 and re.findall(r"not_found_error", trim(message), flags=re.I):
             return CheckResult.fail(ErrorReason.NO_MODEL)
@@ -605,7 +611,12 @@ class AzureOpenAIProvider(OpenAILikeProvider):
         if not token:
             return None
 
-        return {"api-key": token, "content-type": "application/json", "user-agent": USER_AGENT}
+        return {
+            "accept": "application/json",
+            "api-key": token,
+            "content-type": "application/json",
+            "user-agent": USER_AGENT,
+        }
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 404:
@@ -662,7 +673,7 @@ class GeminiProvider(Provider):
         super().__init__("gemini", base_url, sub_path, sub_path, default_model, conditions)
 
     def _get_headers(self, token: str, additional: dict = None) -> dict:
-        return {"content-type": "application/json"}
+        return {"accept": "application/json", "content-type": "application/json"}
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 200:
@@ -1209,10 +1220,12 @@ def recall(
 def chat(
     url: str, headers: dict, model: str = "", params: dict = None, retries: int = 2, timeout: int = 10
 ) -> tuple[int, str]:
-    def output(code: int, message: str) -> None:
-        logging.error(
-            f"[Chat] failed to request url: {url}, headers: {headers}, status code: {code}, message: {message}"
-        )
+    def output(code: int, message: str, debug: bool = False) -> None:
+        text = f"[Chat] failed to request url: {url}, headers: {headers}, status code: {code}, message: {message}"
+        if debug:
+            logging.debug(text)
+        else:
+            logging.error(text)
 
     url, model = trim(url), trim(model)
     if not url:
@@ -1250,27 +1263,24 @@ def chat(
                 break
         except urllib.error.HTTPError as e:
             code = e.code
-            if code == 403 or code == 429:
-                # read response body
+            if code != 401:
                 try:
+                    # read response body
                     message = e.read().decode("utf8")
 
                     # not a json string, use reason instead
                     if not message.startswith("{") or not message.endswith("}"):
                         message = e.reason
-
-                    output(code, message)
                 except:
-                    output(code, e.reason)
-            elif code != 401:
-                message = e.reason
-                output(code, message)
+                    message = e.reason
+
+                # print http status code and error message
+                output(code=code, message=message, debug=False)
 
             if code in NO_RETRY_ERROR_CODES:
                 break
         except Exception:
-            # output(code, traceback.format_exc())
-            pass
+            output(code=code, message=traceback.format_exc(), debug=True)
 
         attempt += 1
         time.sleep(1)
