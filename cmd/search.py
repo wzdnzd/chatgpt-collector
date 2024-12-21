@@ -593,7 +593,7 @@ class AnthropicProvider(Provider):
 
 class AzureOpenAIProvider(OpenAILikeProvider):
     def __init__(self, conditions: list[Condition], default_model: str = ""):
-        default_model = trim(default_model) or "gpt-4o-mini"
+        default_model = trim(default_model) or "gpt-4o"
         super().__init__(
             name="azure",
             base_url="",
@@ -620,6 +620,10 @@ class AzureOpenAIProvider(OpenAILikeProvider):
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 404:
+            message = trim(message)
+            if re.finditer(r"The API deployment for this resource does not exist", message, flags=re.I):
+                return CheckResult.fail(ErrorReason.NO_MODEL)
+
             return CheckResult.fail(ErrorReason.INVALID_KEY)
 
         return super()._judge(code, message)
@@ -1334,7 +1338,7 @@ def scan_azure_keys(
 
     regex = r"[a-z0-9]{32}"
     conditions = [Condition(query=query, regex=regex)]
-    default_model = "gpt-4o-mini"
+    default_model = "gpt-4o"
     provider = AzureOpenAIProvider(conditions=conditions, default_model=default_model)
 
     return scan(
