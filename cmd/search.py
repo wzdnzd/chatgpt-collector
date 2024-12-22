@@ -12,6 +12,7 @@ import math
 import os
 import random
 import re
+import socket
 import ssl
 import time
 import traceback
@@ -528,8 +529,6 @@ class AnthropicProvider(Provider):
     def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
         token = trim(token)
         if token.startswith("sk-ant-sid01-"):
-            logging.debug(f"found session key: {token}, check it with organizations api")
-
             url = "https://api.claude.ai/api/organizations"
             headers = {
                 "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -541,9 +540,53 @@ class AnthropicProvider(Provider):
                 "sec-fetch-site": "none",
             }
 
-            content = http_get(url=url, headers=headers, interval=1)
+            # content = http_get(url=url, headers=headers, interval=1)
+            content, success = "", False
+            attempt, retries, timeout = 0, 3, 10
+
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            while attempt < retries:
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout, context=CTX) as response:
+                        content = response.read().decode("utf8")
+                        success = True
+                        break
+                except urllib.error.HTTPError as e:
+                    if e.code == 401:
+                        return CheckResult.fail(ErrorReason.INVALID_KEY)
+                    else:
+                        try:
+                            content = e.read().decode("utf8")
+                            if not content.startswith("{") or not content.endswith("}"):
+                                content = e.reason
+                        except:
+                            content = e.reason
+
+                        if e.code == 403:
+                            message = ""
+                            try:
+                                data = json.loads(content)
+                                message = data.get("error", {}).get("message", "")
+                            except:
+                                message = content
+
+                            if re.findall(r"Invalid authorization", message, flags=re.I):
+                                return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+                        if e.code in NO_RETRY_ERROR_CODES:
+                            break
+                except Exception as e:
+                    if not isinstance(e, urllib.error.URLError) or not isinstance(e.reason, socket.timeout):
+                        logging.error(f"check claude session error, key: {token}, message: {traceback.format_exc()}")
+
+                attempt += 1
+                time.sleep(1)
+
             if not content or re.findall(r"Invalid authorization", content, flags=re.I):
                 return CheckResult.fail(ErrorReason.INVALID_KEY)
+            elif not success:
+                logging.error(f"check claude session error, key: {token}, message: {content}")
+                return CheckResult.fail(ErrorReason.UNKNOWN)
 
             try:
                 data = json.loads(content)
@@ -812,7 +855,7 @@ def search_code(query: str, session: str, page: int, with_api: bool, peer_page: 
         return []
 
     try:
-        regex = r'href="(/\S+/blob/.*?)#L\d+"'
+        regex = r'href="(/[^\s"]+/blob/(?:[^"]+)?)#L\d+"'
         groups = re.findall(regex, content, flags=re.I)
         uris = list(set(groups)) if groups else []
         links = set()
@@ -1102,7 +1145,8 @@ def scan(
     wait_check_services: list[Service] = [
         caches[i]
         for i in range(len(masks))
-        if not masks[i].available and masks[i].reason in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL]
+        if not masks[i].available
+        and masks[i].reason in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL, ErrorReason.UNKNOWN]
     ]
     if wait_check_services:
         statistics.update({s: False for s in wait_check_services})
@@ -1570,7 +1614,16 @@ def http_get(
 
         return content
     except urllib.error.HTTPError as e:
-        logging.debug(f"failed to request url: {url}, status code: {e.code}, message: {e.reason}")
+        message = e.read()
+        try:
+            message = str(message, encoding="utf8")
+        except:
+            message = gzip.decompress(message).decode("utf8")
+
+        if not (message.startswith("{") and message.endswith("}")):
+            message = e.reason
+
+        logging.error(f"failed to request url: {url}, status code: {e.code}, message: {message}")
 
         if e.code in NO_RETRY_ERROR_CODES:
             return ""
