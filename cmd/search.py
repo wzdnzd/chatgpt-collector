@@ -389,7 +389,7 @@ class OpenAILikeProvider(Provider):
                     return CheckResult.fail(ErrorReason.INVALID_KEY)
                 elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
-                elif re.findall(r"exceeded_current_quota_error", message, flags=re.I):
+                elif re.findall(r"exceeded_current_quota_error|insufficient_user_quota|余额不足", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
             elif code == 429:
                 if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值|recharge", message, flags=re.I):
@@ -410,7 +410,7 @@ class OpenAILikeProvider(Provider):
 
         try:
             result = json.loads(content)
-            return [x.get("id", "") for x in result.get("data", [])]
+            return [trim(x.get("id", "")) for x in result.get("data", [])]
         except:
             return []
 
