@@ -738,7 +738,7 @@ class GeminiProvider(Provider):
     def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
         token = trim(token)
         if not token:
-            return False
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
 
         model = trim(model) or self.default_model
         url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{model}:generateContent?key={token}"
@@ -764,6 +764,107 @@ class GeminiProvider(Provider):
         except:
             logging.error(f"failed to parse models from response: {content}")
             return []
+
+
+class GooeyAIProvider(Provider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "gpt_4_o_mini"
+        base_url = "https://api.gooey.ai"
+        sub_path = "/v2/google-gpt"
+
+        super().__init__("gooeyai", base_url, sub_path, "", default_model, conditions)
+
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
+        token = trim(token)
+
+        return (
+            {
+                "accept": "application/json",
+                "content-type": "application/json",
+                "authorization": f"Bearer {token}",
+                "user-agent": USER_AGENT,
+            }
+            if token
+            else None
+        )
+
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        headers = self._get_headers(token=token)
+        if not headers:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        model = trim(model) or self.default_model
+        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}"
+
+        params = {
+            "search_query": "I'm looking for 4 stats that have a negative spin and create FOMO/urgency. and 4 stats that have a positive spin.\n\nI only want stats that focus on how Al can help people, teams and companies be better.\n\nSearch the web for reports created this year. Only cite actual stats from those reports. BE CAREFUL. Give a link to each source after each stat. Preferably use reports from companies like Microsoft, Linkedin, Gartner, PWC, Deloitte, Accenture, BCG, McKinsey.",
+            "site_filter": "",
+            "selected_model": model,
+            "max_search_urls": 3,
+            "max_references": 3,
+            "embedding_model": "openai_3_large",
+            "avoid_repetition": True,
+            "max_tokens": 2000,
+            "sampling_temperature": 0,
+            "response_format_type": "json_object",
+        }
+
+        code, message = chat(url=url, headers=headers, params=params)
+        return self._judge(code=code, message=message)
+
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
+        # see: https://api.gooey.ai/docs#tag/Web-Search-+-GPT3/operation/google-gpt
+        return [
+            "o1_preview",
+            "o1_mini",
+            "gpt_4_o",
+            "gpt_4_o_mini",
+            "chatgpt_4_o",
+            "gpt_4_turbo_vision",
+            "gpt_4_vision",
+            "gpt_4_turbo",
+            "gpt_4",
+            "gpt_4_32k",
+            "gpt_3_5_turbo",
+            "gpt_3_5_turbo_16k",
+            "gpt_3_5_turbo_instruct",
+            "llama3_3_70b",
+            "llama3_2_90b_vision",
+            "llama3_2_11b_vision",
+            "llama3_2_3b",
+            "llama3_2_1b",
+            "llama3_1_70b",
+            "llama3_1_8b",
+            "llama3_70b",
+            "llama3_8b",
+            "mixtral_8x7b_instruct_0_1",
+            "gemma_2_9b_it",
+            "gemma_7b_it",
+            "gemini_1_5_flash",
+            "gemini_1_5_pro",
+            "gemini_1_pro_vision",
+            "gemini_1_pro",
+            "palm2_chat",
+            "palm2_text",
+            "claude_3_5_sonnet",
+            "claude_3_opus",
+            "claude_3_sonnet",
+            "claude_3_haiku",
+            "afrollama_v1",
+            "llama3_8b_cpt_sea_lion_v2_1_instruct",
+            "sarvam_2b",
+            "llama_3_groq_70b_tool_use",
+            "llama_3_groq_8b_tool_use",
+            "llama2_70b_chat",
+            "sea_lion_7b_instruct",
+            "llama3_8b_cpt_sea_lion_v2_instruct",
+            "text_davinci_003",
+            "text_davinci_002",
+            "code_davinci_002",
+            "text_curie_001",
+            "text_babbage_001",
+            "text_ada_001",
+        ]
 
 
 def search_github_web(query: str, session: str, page: int) -> str:
@@ -1427,6 +1528,36 @@ def scan_gemini_keys(
     )
 
 
+def scan_gooeyai_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    query = '/sk-[a-zA-Z0-9]{48}/ AND "https://api.gooey.ai"'
+    if with_api:
+        query = '"https://api.gooey.ai" AND "sk-"'
+
+    regex = r"sk-[a-zA-Z0-9]{48}"
+    conditions = [Condition(query=query, regex=regex)]
+    default_model = "gpt_4_o_mini"
+    provider = GooeyAIProvider(conditions=conditions, default_model=default_model)
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
 def scan_openai_keys(
     session: str,
     with_api: bool = False,
@@ -1789,6 +1920,17 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
+    if args.gooeyai:
+        scan_gooeyai_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
     if args.openai:
         scan_openai_keys(
             session=session,
@@ -1942,6 +2084,15 @@ if __name__ == "__main__":
         default=PATH,
         required=False,
         help="workspace path",
+    )
+
+    parser.add_argument(
+        "-y",
+        "--gooeyai",
+        dest="gooeyai",
+        action="store_true",
+        default=False,
+        help="scan gooeyai api keys",
     )
 
     parser.add_argument(
