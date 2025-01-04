@@ -387,15 +387,19 @@ class OpenAILikeProvider(Provider):
                     return CheckResult.fail(ErrorReason.NO_MODEL)
                 elif re.findall(r"unauthorized", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.INVALID_KEY)
-                elif re.findall(r"unsupported_country_region_territory", message, flags=re.I):
+                elif re.findall(r"unsupported_country_region_territory|该令牌无权访问模型", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
-                elif re.findall(r"exceeded_current_quota_error|insufficient_user_quota|余额不足", message, flags=re.I):
+                elif re.findall(
+                    r"exceeded_current_quota_error|insufficient_user_quota|余额(不足|过低)", message, flags=re.I
+                ):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
             elif code == 429:
                 if re.findall(r"insufficient_quota|billing_not_active|欠费|请充值|recharge", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
                 elif re.findall(r"rate_limit_exceeded", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.RATE_LIMITED)
+            elif code == 503 and re.findall(r"无可用渠道", message, flags=re.I):
+                return CheckResult.fail(ErrorReason.NO_MODEL)
 
         return super()._judge(code, message)
 
@@ -1247,7 +1251,8 @@ def scan(
         caches[i]
         for i in range(len(masks))
         if not masks[i].available
-        and masks[i].reason in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL, ErrorReason.UNKNOWN]
+        and masks[i].reason
+        in [ErrorReason.RATE_LIMITED, ErrorReason.NO_MODEL, ErrorReason.NO_ACCESS, ErrorReason.UNKNOWN]
     ]
     if wait_check_services:
         statistics.update({s: False for s in wait_check_services})
@@ -1666,12 +1671,25 @@ def scan_others(args: argparse.Namespace) -> None:
         logging.error(f"pattern for extracting keys cannot be empty")
         return
 
-    query = trim(args.pq)
-    if args.rest and not query:
-        logging.error(f"query cannot be empty when using rest api")
-        return
+    queries = list()
+    if isinstance(args.pq, str):
+        keyword = trim(args.pq)
+        if keyword:
+            queries.append(keyword)
+    elif isinstance(args.pq, list):
+        for keyword in args.pq:
+            query = trim(keyword)
+            if query:
+                queries.append(query)
 
-    conditions = [Condition(query=query, regex=pattern)]
+    if not queries:
+        if args.rest:
+            logging.error(f"queries cannot be empty when using rest api")
+            return
+        else:
+            queries = [""]
+
+    conditions = [Condition(query=query, regex=pattern) for query in queries]
     provider = OpenAILikeProvider(
         name=name,
         base_url=base_url,
@@ -2150,6 +2168,7 @@ if __name__ == "__main__":
         "--provider-query",
         dest="pq",
         type=str,
+        nargs="+",
         default="",
         required=False,
         help="query syntax for github search",
