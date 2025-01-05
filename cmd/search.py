@@ -378,6 +378,20 @@ class OpenAILikeProvider(Provider):
 
     def _judge(self, code: int, message: str) -> CheckResult:
         if code == 200:
+            try:
+                data = json.loads(trim(message))
+                if data and isinstance(data, dict):
+                    error = data.get("error", None)
+                    if error and isinstance(error, dict):
+                        error_type = trim(error.get("type", ""))
+                        error_reason = trim(error.get("message", "")).lower()
+
+                        if error_type or "authorization" in error_reason:
+                            return CheckResult.fail(ErrorReason.INVALID_KEY)
+            except:
+                logging.error(f"failed to parse response, domain: {self.base_url}, message: {message}")
+                return CheckResult.fail(ErrorReason.UNKNOWN)
+
             return CheckResult.ok()
 
         message = trim(message)
@@ -385,12 +399,12 @@ class OpenAILikeProvider(Provider):
             if code == 403:
                 if re.findall(r"model_not_found", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_MODEL)
-                elif re.findall(r"unauthorized", message, flags=re.I):
+                elif re.findall(r"unauthorized|已被封禁", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.INVALID_KEY)
                 elif re.findall(r"unsupported_country_region_territory|该令牌无权访问模型", message, flags=re.I):
                     return CheckResult.fail(ErrorReason.NO_ACCESS)
                 elif re.findall(
-                    r"exceeded_current_quota_error|insufficient_user_quota|余额(不足|过低)", message, flags=re.I
+                    r"exceeded_current_quota_error|insufficient_user_quota|(额度|余额)(不足|过低)", message, flags=re.I
                 ):
                     return CheckResult.fail(ErrorReason.NO_QUOTA)
             elif code == 429:
