@@ -1665,11 +1665,6 @@ def scan_others(args: argparse.Namespace) -> None:
     if not args or not isinstance(args, argparse.Namespace):
         return
 
-    name = trim(args.pn)
-    if not name:
-        logging.error(f"provider name cannot be empty")
-        return
-
     default_model = trim(args.pm)
     if not default_model:
         logging.error(f"model name as default cannot be empty")
@@ -1704,6 +1699,20 @@ def scan_others(args: argparse.Namespace) -> None:
             queries = [""]
 
     conditions = [Condition(query=query, regex=pattern) for query in queries]
+
+    name = trim(args.pn)
+    if not name:
+        start = base_url.find("//")
+        if start == -1:
+            start = -2
+
+        end = base_url.find("/", start + 2)
+        if end == -1:
+            end = len(base_url)
+
+        name = re.sub(r"[._:/\#]+", "-", trim(base_url[start + 2 : end]), flags=re.I).lower()
+        logging.warning(f"provider name is not set, use {name} instead")
+
     provider = OpenAILikeProvider(
         name=name,
         base_url=base_url,
