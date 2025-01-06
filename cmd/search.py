@@ -4,6 +4,7 @@
 # @Time    : 2024-12-09
 
 import argparse
+import codecs
 import gzip
 import itertools
 import json
@@ -21,6 +22,7 @@ import urllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from concurrent import futures
 from dataclasses import dataclass, field
 from enum import Enum, unique
@@ -812,7 +814,7 @@ class GooeyAIProvider(Provider):
             return CheckResult.fail(ErrorReason.INVALID_KEY)
 
         model = trim(model) or self.default_model
-        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}"
+        url = urllib.parse.urljoin(self.base_url, self.completion_path)
 
         params = {
             "search_query": "I'm looking for 4 stats that have a negative spin and create FOMO/urgency. and 4 stats that have a positive spin.\n\nI only want stats that focus on how Al can help people, teams and companies be better.\n\nSearch the web for reports created this year. Only cite actual stats from those reports. BE CAREFUL. Give a link to each source after each stat. Preferably use reports from companies like Microsoft, Linkedin, Gartner, PWC, Deloitte, Accenture, BCG, McKinsey.",
@@ -883,6 +885,124 @@ class GooeyAIProvider(Provider):
             "text_babbage_001",
             "text_ada_001",
         ]
+
+
+class StabilityAIProvider(Provider):
+    def __init__(self, conditions: list[Condition], default_model: str = ""):
+        default_model = trim(default_model) or "core"
+        base_url = "https://api.stability.ai"
+        sub_path = "/v2beta/stable-image/generate"
+
+        super().__init__("stabilityai", base_url, sub_path, "", default_model, conditions)
+
+    def _get_headers(self, token: str, additional: dict = None) -> dict:
+        key = trim(token)
+        if not key:
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "multipart/form-data",
+            "Accept": "application/json",
+        }
+        if additional and isinstance(additional, dict):
+            headers.update(additional)
+
+        return headers
+
+    def check(self, token: str, address: str = "", endpoint: str = "", model: str = "") -> CheckResult:
+        def post_multipart(
+            url: str, token: str, fields: dict = None, files: dict = None, retries: int = 3
+        ) -> tuple[int, str]:
+            url, token = trim(url), trim(token)
+            if not url or not token:
+                return 401, ""
+
+            boundary, contents = str(uuid.uuid4()), []
+            if not isinstance(fields, dict):
+                fields = dict()
+            if not isinstance(files, dict):
+                files = dict()
+
+            # add common form fields
+            for k, v in fields.items():
+                contents.append(f"--{boundary}")
+                contents.append(f'Content-Disposition: form-data; name="{k}"')
+                contents.append("Content-Type: text/plain")
+                contents.append("")
+                contents.append(v)
+                contents.append("")
+
+            # add files
+            for k, v in files.items():
+                filename, data = v
+                contents.append(f"--{boundary}")
+                contents.append(f'Content-Disposition: form-data; name="{k}"; filename="{filename}"')
+                contents.append("Content-Type: application/octet-stream")
+                contents.append("")
+                contents.append(data)
+                contents.append("")
+
+            # add end flag
+            contents.append(f"--{boundary}--")
+            contents.append("")
+
+            # encode content
+            payload = b"\r\n".join(codecs.encode(x, encoding="utf8") for x in contents)
+
+            req = urllib.request.Request(url, data=payload, method="POST")
+
+            # set request headers
+            req.add_header("Accept", "application/json")
+            req.add_header("Authorization", f"Bearer {token}")
+            req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+            req.add_header("User-Agent", USER_AGENT)
+
+            # send request with retry
+            code, message, attempt, retries = 401, "", 0, max(1, retries)
+            while attempt < retries:
+                try:
+                    with urllib.request.urlopen(req, timeout=15, context=CTX) as response:
+                        code = 200
+                        message = response.read().decode("utf8")
+                        break
+                except urllib.error.HTTPError as e:
+                    code = e.code
+                    if code != 401:
+                        try:
+                            message = e.read().decode("utf8")
+                            if not message.startswith("{") or not message.endswith("}"):
+                                message = e.reason
+                        except:
+                            message = e.reason
+
+                        logging.error(
+                            f"[Chat] failed to request url: {url}, token: {token}, status code: {code}, message: {message}"
+                        )
+
+                    if code in NO_RETRY_ERROR_CODES:
+                        break
+                except Exception:
+                    pass
+
+                attempt += 1
+                time.sleep(1)
+
+            return code, message
+
+        token = trim(token)
+        if not token:
+            return CheckResult.fail(ErrorReason.INVALID_KEY)
+
+        model = trim(model) or self.default_model
+        url = f"{urllib.parse.urljoin(self.base_url, self.completion_path)}/{model}"
+        fields = {"prompt": "Lighthouse on a cliff overlooking the ocean", "aspect_ratio": "3:2"}
+
+        code, message = post_multipart(url=url, token=token, fields=fields)
+        return self._judge(code=code, message=message)
+
+    def list_models(self, token: str, address: str = "", endpoint: str = "") -> list[str]:
+        return []
 
 
 def search_github_web(query: str, session: str, page: int) -> str:
@@ -1644,10 +1764,39 @@ def scan_qianfan_keys(
     thread_num: int = None,
     workspace: str = "",
 ) -> None:
-    query = "bce-v3/ALTAK-" if with_api else "/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
+    query = '"bce-v3/ALTAK-"' if with_api else "/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
     regex = r"bce-v3/ALTAK-[a-zA-Z0-9]{21}/[a-z0-9]{40}"
     conditions = [Condition(query=query, regex=regex)]
     provider = QianFanProvider(conditions=conditions, default_model="ernie-4.0-8k-latest")
+
+    return scan(
+        session=session,
+        provider=provider,
+        with_api=with_api,
+        page_num=page_num,
+        thread_num=thread_num,
+        fast=fast,
+        skip=skip,
+        workspace=workspace,
+    )
+
+
+def scan_stabilityai_keys(
+    session: str,
+    with_api: bool = False,
+    page_num: int = -1,
+    fast: bool = False,
+    skip: bool = False,
+    thread_num: int = None,
+    workspace: str = "",
+) -> None:
+    query = '"https://api.stability.ai" AND /sk-[a-zA-Z0-9]{48}/'
+    if with_api:
+        query = '"https://api.stability.ai" AND "sk-"'
+
+    regex = r"sk-[a-zA-Z0-9]{48}"
+    conditions = [Condition(query=query, regex=regex)]
+    provider = StabilityAIProvider(conditions=conditions, default_model="core")
 
     return scan(
         session=session,
@@ -1994,6 +2143,17 @@ def main(args: argparse.Namespace) -> None:
             workspace=args.workspace,
         )
 
+    if args.stabilityai:
+        scan_stabilityai_keys(
+            session=session,
+            with_api=args.rest,
+            page_num=args.num,
+            thread_num=args.thread,
+            fast=args.fast,
+            skip=args.elide,
+            workspace=args.workspace,
+        )
+
     if args.variant:
         return scan_others(args=args)
 
@@ -2125,6 +2285,15 @@ if __name__ == "__main__":
         default=PATH,
         required=False,
         help="workspace path",
+    )
+
+    parser.add_argument(
+        "-x",
+        "--stabilityai",
+        dest="stabilityai",
+        action="store_true",
+        default=False,
+        help="scan stability.ai api keys",
     )
 
     parser.add_argument(
