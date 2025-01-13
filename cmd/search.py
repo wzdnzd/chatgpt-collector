@@ -368,10 +368,13 @@ class OpenAILikeProvider(Provider):
         if not isinstance(additional, dict):
             additional = {}
 
+        auth_key = (trim(self.extras.get("auth_key", None)) if isinstance(self.extras, dict) else "") or "authorization"
+        auth_value = f"Bearer {token}" if auth_key.lower() == "authorization" else token
+
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
-            "authorization": f"Bearer {token}",
+            auth_key: auth_value,
             "user-agent": USER_AGENT,
         }
         headers.update(additional)
@@ -1869,6 +1872,7 @@ def scan_others(args: argparse.Namespace) -> None:
         conditions=conditions,
         completion_path=args.pc,
         model_path=args.pl,
+        auth_key=args.pk,
     )
 
     return scan(
@@ -2323,6 +2327,16 @@ if __name__ == "__main__":
         default="",
         required=False,
         help="chat api path, default is '/v1/chat/completions'",
+    )
+
+    parser.add_argument(
+        "-pk",
+        "--provider-key",
+        dest="pk",
+        type=str,
+        default="",
+        required=False,
+        help="The key name of the request header used for authentication, default is 'Authorization'",
     )
 
     parser.add_argument(
