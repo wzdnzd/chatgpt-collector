@@ -78,8 +78,11 @@ class RequestParams(object):
     # 模型映射
     mapping: dict = None
 
+    # 模型服务商类型
+    style: int = 0
 
-def get_headers(domain: str, token: str = "", customize_headers: dict = None) -> dict:
+
+def get_headers(domain: str, token: str = "", customize_headers: dict = None, style: int = 0) -> dict:
     # TODO: need new method to generate headers due to this method is deprecated
     def create_jwt(access_code: str = "") -> str:
         """see: https://github.com/lobehub/lobe-chat/blob/main/src/utils/jwt.ts"""
@@ -115,7 +118,13 @@ def get_headers(domain: str, token: str = "", customize_headers: dict = None) ->
         # lobe-chat
         headers["X-Lobe-Chat-Auth"] = create_jwt(access_code=token)
     elif token:
-        headers["Authorization"] = f"Bearer {token}"
+        if style == 1:
+            headers["api-key"] = token
+        elif style == 2:
+            headers["x-api-key"] = token
+            headers["anthropic-version"] = "2023-06-01"
+        elif style != 3:
+            headers["Authorization"] = f"Bearer {token}"
 
     if isinstance(customize_headers, dict):
         headers.update(customize_headers)
@@ -125,6 +134,9 @@ def get_headers(domain: str, token: str = "", customize_headers: dict = None) ->
 
 def get_payload(question: str, model: str, stream: bool = True, style: int = 0) -> dict:
     question = utils.trim(question) or DEFAULT_QUESTION
+
+    if style == 3:
+        return {"contents": [{"role": "user", "parts": [{"text": question}]}]}
 
     payload = {
         "model": model or "gpt-3.5-turbo",
@@ -182,7 +194,7 @@ def support_version() -> list[int]:
 
 
 def parse_url(url: str) -> RequestParams:
-    address, stream, version, token, model, mapping = "", -1, -1, "", "", None
+    address, stream, version, token, model, mapping, style = "", -1, -1, "", "", None, 0
 
     url = utils.trim(url)
     if url:
@@ -202,10 +214,16 @@ def parse_url(url: str) -> RequestParams:
 
                 if "token" in params:
                     token = utils.trim(params.get("token"))
+                elif "key" in params:
+                    token = utils.trim(params.get("key"))
 
                 if "model" in params:
                     text = utils.trim(params.get("model"))
                     model = text if text else model
+
+                if "style" in params:
+                    text = utils.trim(params.get("style")).lower()
+                    style = int(text) if text.isdigit() else 0
 
                 if "mapping" in params:
                     text = utils.trim(params.get("mapping"))
@@ -224,10 +242,18 @@ def parse_url(url: str) -> RequestParams:
         except:
             logger.error(f"[Interactive] invalid url: {url}")
 
-    return RequestParams(url=address, stream=stream, version=version, token=token, model=model, mapping=mapping)
+    return RequestParams(
+        url=address,
+        stream=stream,
+        version=version,
+        token=token,
+        model=model,
+        mapping=mapping,
+        style=style,
+    )
 
 
-def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[str]:
+def get_urls(domain: str, potentials: str = "", wander: bool = False, style: int = 0) -> list[str]:
     """
     Generate candidate APIs
 
@@ -257,10 +283,15 @@ def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[st
         if not result.path or result.path == "/":
             subpaths = list(set([x.strip().lower() for x in utils.trim(potentials).split(",") if x]))
             if not subpaths:
-                if wander:
-                    subpaths = COMMON_APIS
+                if style == 2:
+                    subpath = ["/v1/messages"]
+                elif style == 3:
+                    style = ["/v1beta/models"]
                 else:
-                    subpaths = [DEFAULT_API or "/v1/chat/completions"]
+                    if wander:
+                        subpaths = COMMON_APIS
+                    else:
+                        subpaths = [DEFAULT_API or "/v1/chat/completions"]
 
             for subpath in subpaths:
                 url = parse.urljoin(domain, subpath)
@@ -272,6 +303,29 @@ def get_urls(domain: str, potentials: str = "", wander: bool = False) -> list[st
     except:
         logger.error(f"[Interactive] skip due to invalid url: {domain}")
         return []
+
+
+def postprocess_url(base: str, model: str, stream: bool, style: int, token: str) -> str:
+    # generate request url for gemini
+    if style != 3:
+        return base
+
+    base = utils.trim(base)
+    model = utils.trim(model)
+    if not base or not model:
+        return ""
+
+    method = "streamGenerateContent" if stream else "generateContent"
+    url = f"{base.removesuffix('/')}/{model}:{method}"
+    if stream:
+        url += "?alt=sse"
+
+    key = utils.trim(token)
+    if key:
+        flag = "&" if stream else "?"
+        url += f"{flag}key={key}"
+
+    return url
 
 
 def parse_headers(content: str, delimiter: str = "|") -> dict:
@@ -314,7 +368,7 @@ def chat(
     if not isurl(url=url):
         return CheckResult(available=False, terminate=True)
 
-    customize_headers = get_headers(domain=url, token=token, customize_headers=headers)
+    customize_headers = get_headers(domain=url, token=token, customize_headers=headers, style=style)
     model = utils.trim(model) or "gpt-3.5-turbo"
     retry = 3 if retry < 0 else retry
     timeout = 15 if timeout <= 0 else timeout
@@ -322,13 +376,16 @@ def chat(
     payload = get_payload(question=question, model=model, stream=stream, style=style)
     data = json.dumps(payload).encode(encoding="UTF8")
 
+    # generate last url for request
+    final_url = postprocess_url(base=url, model=model, stream=stream, style=style, token=token)
+
     response, count = None, 0
     while not response and count < retry:
         try:
             opener = request.build_opener(utils.NoRedirect)
             response = opener.open(
                 request.Request(
-                    url=url,
+                    url=final_url,
                     data=data,
                     headers=customize_headers,
                     method="POST",
@@ -386,6 +443,7 @@ def chat(
         model=model,
         keyword=keyword,
         strict=strict,
+        is_gemini=style == 3,
     )
 
 
@@ -409,14 +467,17 @@ async def chat_async(
         return CheckResult(available=False)
 
     model = model.strip() or "gpt-3.5-turbo"
-    customize_headers = get_headers(domain=url, token=token, customize_headers=headers)
+    customize_headers = get_headers(domain=url, token=token, customize_headers=headers, style=style)
     payload = get_payload(question=question, model=model, stream=stream, style=style)
     timeout = 6 if timeout <= 0 else timeout
     interval = max(0, interval)
 
+    # generate last url for request
+    final_url = postprocess_url(base=url, model=model, stream=stream, style=style, token=token)
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=customize_headers, timeout=timeout) as response:
+            async with session.post(final_url, json=payload, headers=customize_headers, timeout=timeout) as response:
                 if response.status != 200:
                     terminal = response.status in [400, 401]
                     try:
@@ -440,7 +501,7 @@ async def chat_async(
                 except asyncio.TimeoutError:
                     await asyncio.sleep(interval)
                     return await chat_async(
-                        url=url,
+                        url=final_url,
                         question=question,
                         keyword=keyword,
                         model=model,
@@ -463,11 +524,12 @@ async def chat_async(
                     model=model,
                     keyword=keyword,
                     strict=strict,
+                    is_gemini=style == 3,
                 )
     except:
         await asyncio.sleep(interval)
         return await chat_async(
-            url=url,
+            url=final_url,
             question=question,
             keyword=keyword,
             model=model,
@@ -495,7 +557,7 @@ def check(
     headers: dict = None,
     strict: bool = True,
 ) -> str:
-    target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
+    target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander, style=style)
     stream, version, params, real_model = False, 0, None, ""
 
     for url in urls:
@@ -504,6 +566,7 @@ def check(
             continue
 
         real_model = params.model or model or "gpt-3.5-turbo"
+        style = params.style or style
 
         # available check
         result = chat(
@@ -575,6 +638,7 @@ def check(
         token=params.token,
         model=params.model,
         mapping=params.mapping,
+        style=style,
     )
     filename = utils.trim(filename)
 
@@ -651,7 +715,7 @@ async def check_async(
         headers: dict = None,
     ) -> str:
         async with semaphore:
-            target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander)
+            target, urls = "", get_urls(domain=domain, potentials=potentials, wander=wander, style=style)
             stream, version, params, real_model = False, 0, None, ""
 
             for url in urls:
@@ -660,6 +724,7 @@ async def check_async(
                     continue
 
                 real_model = params.model or model or "gpt-3.5-turbo"
+                style = params.style or style
 
                 # available check
                 result = await chat_async(
@@ -734,6 +799,7 @@ async def check_async(
                 token=params.token,
                 model=params.model,
                 mapping=params.mapping,
+                style=style,
             )
             if target and filename:
                 directory = os.path.dirname(filename)
@@ -916,13 +982,21 @@ def not_ternimate(content: str) -> bool:
     return re.search(r'"errorType":(\s+)?401', content, flags=re.I) is not None
 
 
-def concat_url(url: str, stream: bool, version: int, token: str = "", model: str = "", mapping: dict = None) -> str:
+def concat_url(
+    url: str,
+    stream: bool,
+    version: int,
+    token: str = "",
+    model: str = "",
+    mapping: dict = None,
+    style: int = 0,
+) -> str:
     url = utils.trim(url)
     if not url:
         return ""
 
     version = 3 if version <= 0 else version
-    target = f"{url}?stream={str(stream).lower()}&version={version}"
+    target = f"{url}?stream={str(stream).lower()}&version={version}&style={style}"
 
     token = utils.trim(token)
     if token:
@@ -952,13 +1026,32 @@ def verify(
     model: str,
     keyword: str = DEFAULT_KEYWORD,
     strict: bool = False,
+    is_gemini: bool = False,
 ) -> CheckResult:
-    def extract_message(content: str) -> tuple[bool, str, str]:
+    def parse_gemini_message(data: dict) -> tuple[str, str]:
+        if not data or not isinstance(data, dict):
+            return "", ""
+
+        message, name = "", data.get("modelVersion", "") or ""
+        candidates = data.get("candidates", [])
+        if candidates and isinstance(candidates, list) and isinstance(candidates[0], dict):
+            item = candidates[0].get("content", None)
+            parts = None if not item or not isinstance(item, dict) else item.get("parts", None)
+            if parts and isinstance(parts, list) and isinstance(parts[0], dict):
+                message = parts[0].get("text", "")
+
+        return message, name
+
+    def extract_message(content: str, is_gemini: bool) -> tuple[bool, str, str]:
         if not content:
             return False, "", ""
 
         try:
             data = json.loads(content)
+            if is_gemini:
+                message, name = parse_gemini_message(data=data)
+                return True, message, name
+
             name = data.get("model", "") or ""
 
             # extract message
@@ -982,7 +1075,7 @@ def verify(
         except:
             return False, "", ""
 
-    def support_stream(content: str, strict: bool) -> tuple[bool, str, str]:
+    def support_stream(content: str, strict: bool, is_gemini: bool) -> tuple[bool, str, str]:
         if not content:
             return False, "", ""
 
@@ -1004,7 +1097,7 @@ def verify(
             if text == "[DONE]":
                 continue
 
-            success, message, name = extract_message(content=text)
+            success, message, name = extract_message(content=text, is_gemini=is_gemini)
             if not success:
                 support = len(texts) == 2
                 if len(texts) == 2:
@@ -1024,10 +1117,10 @@ def verify(
     text, support, resp_model = content, False, ""
 
     if "text/event-stream" in content_type:
-        support, text, resp_model = support_stream(content=content, strict=strict)
+        support, text, resp_model = support_stream(content=content, strict=strict, is_gemini=is_gemini)
     elif "application/json" in content_type or "text/plain" in content_type:
         content = re.sub(r"^```json\n|\n```$", "", text, flags=re.MULTILINE)
-        support, message, resp_model = extract_message(content=content)
+        support, message, resp_model = extract_message(content=content, is_gemini=is_gemini)
         text = message or content
 
     available = re.search(keyword, text, flags=re.I) is not None and re.search(r'"error":', text, flags=re.I) is None

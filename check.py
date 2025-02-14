@@ -498,8 +498,8 @@ if __name__ == "__main__":
         type=int,
         required=False,
         default=0,
-        choices=[0, 1],
-        help="request body format, 0 means to use the OpenAI style and 1 means to use the Azure style",
+        choices=[0, 1, 2, 3],
+        help="provider category, 0 for openai-like, 1 for azure, 2 for anthropic and 3 for gemini",
     )
 
     parser.add_argument(
