@@ -1587,6 +1587,7 @@ def scan_anthropic_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     regex = r"sk-ant-(?:sid01|api03)-[a-zA-Z0-9_\-]{93}AA"
     if with_api:
@@ -1594,7 +1595,7 @@ def scan_anthropic_keys(
     else:
         conditions = [Condition(query="", regex=regex)]
 
-    default_model = "claude-3-5-sonnet-latest"
+    default_model = trim(model) or "claude-3-5-sonnet-latest"
     provider = AnthropicProvider(conditions=conditions, default_model=default_model)
 
     return scan(
@@ -1617,6 +1618,7 @@ def scan_azure_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     # TODO: optimize query syntax for github api
     query = "/https:\/\/[a-zA-Z0-9_\-\.]+.openai.azure.com\/openai\// AND /(?-i)[a-z0-9]{32}/"
@@ -1625,7 +1627,7 @@ def scan_azure_keys(
 
     regex = r"[a-z0-9]{32}"
     conditions = [Condition(query=query, regex=regex)]
-    default_model = "gpt-4o"
+    default_model = trim(model) or "gpt-4o"
     provider = AzureOpenAIProvider(conditions=conditions, default_model=default_model)
 
     return scan(
@@ -1648,6 +1650,7 @@ def scan_gemini_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     query = '/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
     if with_api:
@@ -1655,7 +1658,7 @@ def scan_gemini_keys(
 
     regex = r"AIzaSy[a-zA-Z0-9_\-]{33}"
     conditions = [Condition(query=query, regex=regex)]
-    default_model = "gemini-exp-1206"
+    default_model = trim(model) or "gemini-2.0-flash"
     provider = GeminiProvider(conditions=conditions, default_model=default_model)
 
     return scan(
@@ -1678,6 +1681,7 @@ def scan_gooeyai_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     query = '/sk-[a-zA-Z0-9]{48}/ AND "https://api.gooey.ai"'
     if with_api:
@@ -1685,7 +1689,7 @@ def scan_gooeyai_keys(
 
     regex = r"sk-[a-zA-Z0-9]{48}"
     conditions = [Condition(query=query, regex=regex)]
-    default_model = "gpt_4_o_mini"
+    default_model = trim(model) or "gpt_4_o_mini"
     provider = GooeyAIProvider(conditions=conditions, default_model=default_model)
 
     return scan(
@@ -1708,13 +1712,14 @@ def scan_openai_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     # TODO: optimize query syntax for github api
     query = '"T3BlbkFJ"' if with_api else ""
     regex = r"sk(?:-proj)?-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}|sk-proj-(?:[a-zA-Z0-9_\-]{91}|[a-zA-Z0-9_\-]{123}|[a-zA-Z0-9_\-]{155})A|sk-svcacct-[A-Za-z0-9_\-]+T3BlbkFJ[A-Za-z0-9_\-]+"
 
     conditions = [Condition(query=query, regex=regex)]
-    provider = OpenAIProvider(conditions=conditions, default_model="gpt-4o-mini")
+    provider = OpenAIProvider(conditions=conditions, default_model=(trim(model) or "gpt-4o-mini"))
 
     return scan(
         session=session,
@@ -1736,6 +1741,7 @@ def scan_doubao_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     # TODO: optimize query syntax for github api
     query = '"https://ark.cn-beijing.volces.com" AND /[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}/'
@@ -1744,7 +1750,7 @@ def scan_doubao_keys(
 
     regex = r"[a-z0-9]{8}(?:-[a-z0-9]{4}){3}-[a-z0-9]{12}"
     conditions = [Condition(query=query, regex=regex)]
-    provider = DoubaoProvider(conditions=conditions, default_model="doubao-pro-32k")
+    provider = DoubaoProvider(conditions=conditions, default_model=(trim(model) or "doubao-pro-32k"))
 
     return scan(
         session=session,
@@ -1766,11 +1772,12 @@ def scan_qianfan_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     query = '"bce-v3/ALTAK-"' if with_api else "/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
     regex = r"bce-v3/ALTAK-[a-zA-Z0-9]{21}/[a-z0-9]{40}"
     conditions = [Condition(query=query, regex=regex)]
-    provider = QianFanProvider(conditions=conditions, default_model="ernie-4.0-8k-latest")
+    provider = QianFanProvider(conditions=conditions, default_model=(trim(model) or "ernie-4.0-8k-latest"))
 
     return scan(
         session=session,
@@ -1792,6 +1799,7 @@ def scan_stabilityai_keys(
     skip: bool = False,
     thread_num: int = None,
     workspace: str = "",
+    model: str = "",
 ) -> None:
     query = '"https://api.stability.ai" AND /sk-[a-zA-Z0-9]{48}/'
     if with_api:
@@ -1799,7 +1807,7 @@ def scan_stabilityai_keys(
 
     regex = r"sk-[a-zA-Z0-9]{48}"
     conditions = [Condition(query=query, regex=regex)]
-    provider = StabilityAIProvider(conditions=conditions, default_model="core")
+    provider = StabilityAIProvider(conditions=conditions, default_model=(trim(model) or "core"))
 
     return scan(
         session=session,
@@ -2079,6 +2087,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.doubao:
@@ -2090,6 +2099,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.claude:
@@ -2101,6 +2111,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.gemini:
@@ -2112,6 +2123,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.gooeyai:
@@ -2123,6 +2135,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.openai:
@@ -2134,6 +2147,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.qianfan:
@@ -2145,6 +2159,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.stabilityai:
@@ -2156,6 +2171,7 @@ def main(args: argparse.Namespace) -> None:
             fast=args.fast,
             skip=args.elide,
             workspace=args.workspace,
+            model=args.pm,
         )
 
     if args.variant:
