@@ -1505,7 +1505,7 @@ def recall(
     tasks = [[x, regex, 3, address_pattern, endpoint_pattern, model_pattern] for x in links if x]
     result = multi_thread_run(func=collect, tasks=tasks, thread_num=thread_num)
 
-    return list(itertools.chain.from_iterable(result))
+    return [] if not result else list(itertools.chain.from_iterable([x for x in result if x]))
 
 
 def chat(
