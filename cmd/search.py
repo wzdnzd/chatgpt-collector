@@ -1621,7 +1621,7 @@ def scan_azure_keys(
     model: str = "",
 ) -> None:
     # TODO: optimize query syntax for github api
-    query = "/https:\/\/[a-zA-Z0-9_\-\.]+.openai.azure.com\/openai\// AND /(?-i)[a-z0-9]{32}/"
+    query = r"/https:\/\/[a-zA-Z0-9_\-\.]+.openai.azure.com\/openai\// AND /(?-i)[a-z0-9]{32}/"
     if with_api:
         query = "openai.azure.com/openai/deployments"
 
@@ -1652,7 +1652,7 @@ def scan_gemini_keys(
     workspace: str = "",
     model: str = "",
 ) -> None:
-    query = '/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
+    query = r'/AIzaSy[a-zA-Z0-9_\-]{33}/ AND content:"gemini"'
     if with_api:
         query = '"AIzaSy" AND "gemini"'
 
@@ -1774,7 +1774,7 @@ def scan_qianfan_keys(
     workspace: str = "",
     model: str = "",
 ) -> None:
-    query = '"bce-v3/ALTAK-"' if with_api else "/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
+    query = '"bce-v3/ALTAK-"' if with_api else r"/bce-v3\/ALTAK-[a-zA-Z0-9]{21}\/[a-z0-9]{40}/"
     regex = r"bce-v3/ALTAK-[a-zA-Z0-9]{21}/[a-z0-9]{40}"
     conditions = [Condition(query=query, regex=regex)]
     provider = QianFanProvider(conditions=conditions, default_model=(trim(model) or "ernie-4.0-8k-latest"))
@@ -2403,7 +2403,7 @@ if __name__ == "__main__":
         type=str,
         default="",
         required=False,
-        help="pattern for extract keys from code, default is 'sk-[a-zA-Z0-9_\-]{48}'",
+        help=r"pattern for extract keys from code, default is 'sk-[a-zA-Z0-9_\-]{48}'",
     )
 
     main(parser.parse_args())
