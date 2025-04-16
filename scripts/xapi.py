@@ -65,7 +65,7 @@ def checkin(params: dict) -> list[str]:
         sitekey = utils.trim(option.get("sitekey", ""))
         sitelink = utils.trim(option.get("sitelink", ""))
         regex = utils.trim(option.get("done", ""))
-        is_newapi = option.get("newapi", False)
+        uheader = utils.trim(option.get("uheader", ""))
 
         accounts = option.get("accounts", [])
         if not accounts or not isinstance(accounts, list):
@@ -81,7 +81,7 @@ def checkin(params: dict) -> list[str]:
             uid = account.get("uid", None)
 
             if token or cookie:
-                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, cookie, uid, is_newapi))
+                tasks.append((url, path, token, unit, 3, sitekey, sitelink, regex, cookie, uid, uheader))
             else:
                 logger.error(f"[ONEAPI] ignore invalid token and cookie, url: {url}")
 
@@ -116,14 +116,14 @@ def checkin_one(
     done_regex: str = "",
     cookie: str = "",
     uid: str | int = None,
-    is_newapi: bool = False,
+    uheader: str = "",
 ) -> CheckInResult:
     if not base or (not token and not cookie):
         logger.error(f"[ONEAPI] skip execute checkin because invalid url or token and cookie, url: {base}")
         return CheckInResult(url=base, success=False, token=token)
 
     url = urljoin(base, path) if path else base
-    headers = get_headers(token=token, cookie=cookie, is_newapi=is_newapi, uid=uid)
+    headers = get_headers(token=token, cookie=cookie, uheader=uheader, uid=uid)
     if not headers:
         logger.error(f"[ONEAPI] please provide a token or cookie, url: {base}")
         return CheckInResult(url=base, success=False, token=token)
@@ -160,14 +160,14 @@ def checkin_one(
     if turnstile:
         url = f"{url}?turnstile={turnstile}"
 
-    if is_newapi and not uid:
+    if uheader and not uid:
         account = account_info(base=base, headers=headers)
         if not account:
             logger.error(f"[ONEAPI] cannot signin because fetch account failed")
             return CheckInResult(url=base, success=False, token=token)
 
         uid = account.get("id", -1)
-        headers["New-Api-User"] = uid
+        headers[uheader] = uid
 
     payload = None if uid is None else json.dumps({"id": uid}).encode(encoding="UTF8")
 
@@ -228,10 +228,10 @@ def checkin_one(
 
 
 def account_info(
-    base: str, headers: dict = None, token: str = "", cookie: str = "", is_newapi: bool = False, uid: str | int = None
+    base: str, headers: dict = None, token: str = "", cookie: str = "", uheader: str = "", uid: str | int = None
 ) -> dict:
     if not headers or not isinstance(headers, dict):
-        headers = get_headers(token=token, cookie=cookie, is_newapi=is_newapi, uid=uid)
+        headers = get_headers(token=token, cookie=cookie, uheader=uheader, uid=uid)
         if not headers:
             return None
 
@@ -251,15 +251,16 @@ def account_info(
     return data
 
 
-def get_headers(token: str, cookie: str, is_newapi: bool = False, uid: str | int = None) -> dict:
+def get_headers(token: str, cookie: str, uheader: str = "", uid: str | int = None) -> dict:
     token = utils.trim(token)
     cookie = utils.trim(cookie)
+    uheader = utils.trim(uheader)
 
     if not token and not cookie:
         logger.error(f"[ONEAPI] either a token or a cookie must be provided")
         return None
-    elif is_newapi and not uid and not token:
-        logger.error(f"[ONEAPI] newapi service must specify uid or token")
+    elif uheader and not uid and not token:
+        logger.error(f"[ONEAPI] service must specify uid or token")
         return None
 
     headers = {"User-Agent": utils.USER_AGENT, "Content-Type": "application/json"}
@@ -267,8 +268,8 @@ def get_headers(token: str, cookie: str, is_newapi: bool = False, uid: str | int
         headers["Authorization"] = f"Bearer {token}"
     if cookie:
         headers["Cookie"] = cookie
-    if is_newapi and uid:
-        headers["New-Api-User"] = uid
+    if uheader and uid:
+        headers[uheader] = uid
 
     return headers
 
