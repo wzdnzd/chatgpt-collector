@@ -63,21 +63,21 @@ def main(args: argparse.Namespace) -> None:
 
         try:
             with open(filepath, "r", encoding="utf8") as f:
-                config = json.load(f)
-                server, storages = config.get("server", ""), config.get("storages", {})
-                pushtool = push.get_instance(domain=server)
+                stroage = json.load(f)
+                pushtool = push.get_instance(config=push.PushConfig.from_dict(stroage))
 
-                if not storages or type(storages) != dict:
+                engine = utils.trim(stroage.get("engine", ""))
+                persists = stroage.get("items", {})
+                if not persists or type(persists) != dict:
                     logger.error(f"[CMD] invalid persist config file '{filepath}'")
                     return
 
-                for k, v in storages.items():
+                for k, v in persists.items():
                     if k not in ["modified", "sites"] or not pushtool.validate(v):
-                        logger.error(f"[CMD] found invalid configuration '{k}' for server: {server}")
+                        logger.error(f"[CMD] found invalid configuration '{k}' for storage engine: {engine}")
                         return
 
-                params["persist"] = storages
-                os.environ["COLLECT_CONF"] = server
+                params["storage"] = stroage
         except:
             logger.error(f"[CMD] illegal configuration, must be JSON file")
             return

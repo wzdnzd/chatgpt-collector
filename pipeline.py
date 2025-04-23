@@ -495,17 +495,18 @@ def collect(params: dict) -> list:
     if not params or type(params) != dict:
         return []
 
-    persist = params.get("persist", {})
-    storage = {} if not persist or type(persist) != dict else persist
+    storage = params.get("storage", {})
+    persist = {} if not storage or type(storage) != dict else storage.get("items", {})
+    if not persist or type(persist) != dict:
+        persist = dict()
 
-    server = os.environ.get("COLLECT_CONF", "").strip()
-    pushtool = push.get_instance(domain=server)
-    if not is_local() and not pushtool.validate(storage.get("modified", {})):
+    pushtool = push.get_instance(config=push.PushConfig.from_dict(storage))
+    if not is_local() and not pushtool.validate(persist.get("modified", {})):
         logger.error(f"[Pipeline] invalid persist config, must config modified store if running on remote")
         return []
 
     # store config
-    modified, database = storage.get("modified", {}), storage.get("sites", {})
+    modified, database = persist.get("modified", {}), persist.get("sites", {})
 
     # github user session
     session = utils.trim(os.environ.get("USER_SESSION", ""))
@@ -576,7 +577,7 @@ def collect(params: dict) -> list:
         begin = datetime.now(timezone.utc).strftime(DATE_FORMAT)
 
         # fetch last run time
-        last = last_history(pushtool.raw_url(push_conf=modified), refresh)
+        last = last_history(pushtool.raw_url(config=modified), refresh)
 
         # source repository deployments
         domains, deployments = set(), [f"https://api.github.com/repos/{username}/{repository}/deployments"]
@@ -638,7 +639,7 @@ def collect(params: dict) -> list:
         # save last modified time
         if pushtool.validate(modified):
             content = json.dumps({LAST_MODIFIED: begin})
-            pushtool.push_to(content=content, push_conf=modified, group="modified")
+            pushtool.push_to(content=content, config=modified, group="modified")
 
     logger.info(f"[Pipeline] candidate target collection completed, found {len(candidates)} sites")
 
@@ -682,7 +683,7 @@ def collect(params: dict) -> list:
 
     # save sites
     if sites and pushtool.validate(database):
-        success = pushtool.push_to(content=",".join(sites), push_conf=database, group="sites")
+        success = pushtool.push_to(content=",".join(sites), config=database, group="sites")
         if not success:
             logger.error(f"[Pipeline] push {len(sites)} sites to remote failed")
 
