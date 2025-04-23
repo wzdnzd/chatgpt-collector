@@ -66,38 +66,19 @@ def execute_script(script: str, params: dict = {}) -> list[str]:
         return []
 
 
-def call(script: str, params: dict, availables: ListProxy, semaphore: Semaphore) -> None:
-    try:
-        if not script:
-            return
-
-        subscribes = execute_script(script=script, params=params)
-        if subscribes and type(subscribes) == list:
-            availables.extend(subscribes)
-    finally:
-        if semaphore is not None and isinstance(semaphore, Semaphore):
-            semaphore.release()
-
-
 def batch_call(tasks: dict) -> list[str]:
+    """execute multiple script tasks using process pool"""
     if not tasks:
         return []
 
     try:
-        thread_num = max(min(len(tasks), 50), 1)
-        with multiprocessing.Manager() as manager:
-            availables, processes = manager.list(), []
-            semaphore = multiprocessing.Semaphore(thread_num)
-            for k, v in tasks.items():
-                semaphore.acquire()
-                p = multiprocessing.Process(target=call, args=(k, v, availables, semaphore))
-                p.start()
-                processes.append(p)
-            for p in processes:
-                p.join()
+        # convert tasks dict to list of tuples
+        items = [(k, v) for k, v in tasks.items() if k]
+        results = utils.multi_process_run(func=execute_script, tasks=items)
 
-            return list(availables)
-    except:
+        # flatten results and remove empty lists
+        return [url for result in results if result for url in result]
+    except Exception:
         traceback.print_exc()
         return []
 
@@ -209,7 +190,12 @@ def process(args: argparse.Namespace) -> None:
             return
         else:
             configuration = json.loads(content)
-            pushtool = push.get_instance(domain=url)
+            storage = configuration.get("storage", {})
+            if not storage or not isinstance(storage, dict):
+                logger.error("[ConfigError] cannot found any valid storage configuration")
+                return
+
+            pushtool = push.get_instance(push_config=push.PushConfig.from_dict(storage))
             tasks = regularized(data=configuration, pushtool=pushtool)
 
             if not tasks:
@@ -219,12 +205,17 @@ def process(args: argparse.Namespace) -> None:
             urls = batch_call(tasks.get("scripts", {}))
             urls.extend(crawl_pages(tasks.get("pages", {})))
 
+            # all persist config
+            persists = storage.get("items", {})
+            if not persists or not isinstance(persists, dict):
+                persists = dict()
+
             # exist urls
-            candidates = fetct_exist(tasks.get("persists"), pushtool)
+            candidates = fetct_exist(persists, pushtool)
 
             # generate blacklist
             blacklist = generate_blacklist(
-                persists=tasks.get("persists"),
+                persists=persists,
                 blackconf=tasks.get("blacklist", {}),
                 pushtool=pushtool,
             )
@@ -251,11 +242,6 @@ def process(args: argparse.Namespace) -> None:
             if not data:
                 logger.warning("[ProcessWarn] cannot found any domains")
                 return
-
-            # all persist config
-            persists = tasks.get("persists", {})
-            if not persists or not isinstance(persists, dict):
-                persists = dict()
 
             params = [[v, persists.get(k), k, 5] for k, v in data.items() if v]
             cleaned = os.environ.get("NO_PARAMS", "false") in ["true", "1"]
@@ -316,7 +302,8 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
     if not data or not pushtool:
         return {}
 
-    persists, groups = data.pop("persists", {}), {}
+    storage = data.pop("storage", {})
+    persists, groups = storage.pop("items", {}), {}
     if not persists or type(persists) != dict:
         logger.error("[ConfigError] collect configuration must specify persists")
         return {}
@@ -329,6 +316,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
         logger.error("[ConfigError] persists must include 'availables' and 'candidates'")
         return {}
 
+    storage["items"] = groups
     scripts, pages = data.pop("scripts", {}), data.pop("pages", {})
     script_tasks, page_tasks = {}, {}
 
@@ -356,7 +344,7 @@ def regularized(data: dict, pushtool: push.PushTo) -> dict:
             "wander": wander,
             "scripts": script_tasks,
             "pages": page_tasks,
-            "persists": groups,
+            "storage": storage,
         }
     )
     return data

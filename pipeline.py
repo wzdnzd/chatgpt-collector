@@ -495,17 +495,18 @@ def collect(params: dict) -> list:
     if not params or type(params) != dict:
         return []
 
-    persist = params.get("persist", {})
-    storage = {} if not persist or type(persist) != dict else persist
+    storage = params.get("storage", {})
+    persist = {} if not storage or type(storage) != dict else storage.get("items", {})
+    if not persist or type(persist) != dict:
+        persist = dict()
 
-    server = os.environ.get("COLLECT_CONF", "").strip()
-    pushtool = push.get_instance(domain=server)
-    if not is_local() and not pushtool.validate(storage.get("modified", {})):
+    pushtool = push.get_instance(push_config=push.PushConfig.from_dict(storage))
+    if not is_local() and not pushtool.validate(persist.get("modified", {})):
         logger.error(f"[Pipeline] invalid persist config, must config modified store if running on remote")
         return []
 
     # store config
-    modified, database = storage.get("modified", {}), storage.get("sites", {})
+    modified, database = persist.get("modified", {}), persist.get("sites", {})
 
     # github user session
     session = utils.trim(os.environ.get("USER_SESSION", ""))

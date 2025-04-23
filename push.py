@@ -7,20 +7,29 @@ import json
 import os
 import traceback
 import urllib
-import urllib.parse
 import urllib.request
-from enum import Enum
+from dataclasses import dataclass
 from http.client import HTTPResponse
 
 import utils
 from logger import logger
+from urlvalidator import isurl
+
+LOCAL_STORAGE = "local"
 
 
 class PushTo(object):
-    def __init__(self, token: str = "") -> None:
-        self.api_address = ""
+    def __init__(self, token: str = "", base: str = "", domain: str = "") -> None:
+        base, domain = utils.trim(base), utils.trim(domain)
+        if base and not domain:
+            domain = base
+        elif not base and domain:
+            base = domain
+
         self.name = ""
         self.method = "PUT"
+        self.domain = domain
+        self.api_address = base
         self.token = "" if not token or not isinstance(token, str) else token
 
     def _storage(self, content: str, filename: str, folder: str = "") -> bool:
@@ -112,11 +121,21 @@ class PushTo(object):
 class PushToPasteGG(PushTo):
     """https://paste.gg"""
 
-    def __init__(self, token: str) -> None:
-        super().__init__(token=token)
-        self.api_address = "https://api.paste.gg/v1/pastes"
-        self.name = "paste.gg"
+    def __init__(self, token: str, base: str = "", domain: str = "") -> None:
+        base = utils.trim(base).removesuffix("/") or "https://api.paste.gg"
+        if not isurl(base):
+            raise ValueError(f"[PushError] invalid base address for pastegg: {base}")
+
+        domain = utils.trim(domain).removesuffix("/") or "https://paste.gg"
+        if not isurl(domain):
+            raise ValueError(f"[PushError] invalid domain address for pastegg: {domain}")
+
+        super().__init__(token=token, base=base, domain=domain)
+
+        self.name = "pastegg"
         self.method = "PATCH"
+        self.domain = domain
+        self.api_address = f"{base}/v1/pastes"
 
     def validate(self, push_conf: dict) -> bool:
         if not push_conf or type(push_conf) != dict:
@@ -166,52 +185,22 @@ class PushToPasteGG(PushTo):
         if not fileid or not folderid or not username:
             return ""
 
-        return f"https://paste.gg/p/{username}/{folderid}/files/{fileid}/raw"
-
-
-class PushToFarsEE(PushTo):
-    """https://fars.ee"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.name = "fars.ee"
-        self.api_address = "https://fars.ee"
-        self.method = "PUT"
-
-    def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
-        uuid = push_conf.get("uuid", "")
-        headers = {"Content-Type": "application/json"}
-        data = json.dumps({"content": content, "private": 1}).encode("UTF8")
-        url = f"{self.api_address}/{uuid}"
-
-        return url, data, headers
-
-    def validate(self, push_conf: dict) -> bool:
-        return push_conf is not None and type(push_conf) == dict and push_conf.get("uuid", "")
-
-    def filter_push(self, push_conf: dict) -> dict:
-        configs = {}
-        for k, v in push_conf.items():
-            if v and v.get("uuid", ""):
-                configs[k] = v
-
-        return configs
-
-    def raw_url(self, push_conf: dict) -> str:
-        if not push_conf or type(push_conf) != dict or not push_conf.get("fileid", ""):
-            return ""
-
-        fileid = push_conf.get("fileid", "")
-        return f"{self.api_address}/{fileid}"
+        return f"{self.domain}/p/{username}/{folderid}/files/{fileid}/raw"
 
 
 class PushToDevbin(PushToPasteGG):
     """https://devbin.dev"""
 
-    def __init__(self, token: str) -> None:
-        super().__init__(token=token)
-        self.name = "devbin.dev"
-        self.api_address = "https://devbin.dev/api/v3/paste"
+    def __init__(self, token: str, base: str = "") -> None:
+        base = utils.trim(base).removesuffix("/") or "https://devbin.dev"
+        if not isurl(base):
+            raise ValueError(f"[PushError] invalid base address for devbin: {base}")
+
+        super().__init__(token=token, base=base)
+
+        self.name = "devbin"
+        self.domain = base
+        self.api_address = f"{base}/api/v3/paste"
 
     def validate(self, push_conf: dict) -> bool:
         if not push_conf or type(push_conf) != dict:
@@ -244,29 +233,28 @@ class PushToDevbin(PushToPasteGG):
     def _is_success(self, response: HTTPResponse) -> bool:
         return response and response.getcode() == 201
 
-    def _error_handler(self, group: str = "") -> None:
-        super()._error_handler(group)
-
-        # TODO: waitting for product enviroment api
-        self.api_address = "https://beta.devbin.dev/api/v3/paste"
-
     def raw_url(self, push_conf: dict) -> str:
         if not push_conf or type(push_conf) != dict or not push_conf.get("fileid", ""):
             return ""
 
         fileid = push_conf.get("fileid", "")
-
-        return f"https://devbin.dev/Raw/{fileid}"
+        return f"{self.domain}/Raw/{fileid}"
 
 
 class PushToPastefy(PushToDevbin):
-    """https://pastefy.ga"""
+    """https://pastefy.app"""
 
-    def __init__(self, token: str) -> None:
-        super().__init__(token)
-        self.name = "pastefy.ga"
-        self.api_address = "https://pastefy.ga/api/v2/paste"
+    def __init__(self, token: str, base: str = "") -> None:
+        base = utils.trim(base).removesuffix("/") or "https://pastefy.app"
+        if not isurl(base):
+            raise ValueError(f"[PushError] invalid base address for pastefy: {base}")
+
+        super().__init__(token=token, base=base)
+
+        self.name = "pastefy"
         self.method = "PUT"
+        self.domain = base
+        self.api_address = f"{base}/api/v2/paste"
 
     def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
         fileid = push_conf.get("fileid", "")
@@ -302,44 +290,49 @@ class PushToPastefy(PushToDevbin):
         if not fileid:
             return ""
 
-        return f"https://pastefy.ga/{fileid}/raw"
+        return f"{self.domain}/{fileid}/raw"
 
 
-class PushToDrift(PushToPastefy):
-    """waitting for public api"""
+class PushToImperial(PushToPasteGG):
+    """https://imperialb.in"""
 
-    def __init__(self, token: str) -> None:
-        super().__init__(token=token)
-        self.name = "drift"
-        self.api_address = "https://paste.ding.free.hr/api/file"
+    def __init__(self, token: str, base: str = "", domain: str = "") -> None:
+        base = utils.trim(base).removesuffix("/") or "https://api.imperialb.in"
+        if not isurl(base):
+            raise ValueError(f"[PushError] invalid base address for imperial: {base}")
 
-    def raw_url(self, push_conf: dict) -> str:
-        if not push_conf or type(push_conf) != dict:
-            return ""
+        domain = utils.trim(domain).removesuffix("/") or "https://imperialb.in"
+        if not isurl(domain):
+            raise ValueError(f"[PushError] invalid domain address for imperial: {domain}")
 
-        fileid = push_conf.get("fileid", "")
-        if utils.isblank(text=fileid):
-            return ""
+        super().__init__(token=token, base=base, domain=domain)
 
-        return f"{self.api_address}/raw/{fileid}"
-
-    def _is_success(self, response: HTTPResponse) -> bool:
-        return response and response.getcode() in [200, 204]
-
-
-class PushToImperial(PushToPastefy):
-    def __init__(self, token: str) -> None:
-        super().__init__(token)
         self.name = "imperial"
-        self.api_address = "https://api.imperialb.in/v1/document"
         self.method = "PATCH"
+        self.domain = domain
+        self.api_address = f"{base}/v1/document"
 
     def raw_url(self, push_conf: dict) -> str:
         if not self.validate(push_conf):
             return ""
 
         fileid = push_conf.get("fileid", "")
-        return f"https://imperialb.in/r/{fileid}"
+        return f"{self.domain}/r/{fileid}"
+
+    def validate(self, push_conf: dict) -> bool:
+        if not push_conf or type(push_conf) != dict:
+            return False
+
+        fileid = push_conf.get("fileid", "")
+        return "" != self.token.strip() and "" != fileid.strip()
+
+    def filter_push(self, push_conf: dict) -> dict:
+        configs = {}
+        for k, v in push_conf.items():
+            if v.get("fileid", "") and self.token:
+                configs[k] = v
+
+        return configs
 
     def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
         fileid = push_conf.get("fileid", "")
@@ -353,6 +346,15 @@ class PushToImperial(PushToPastefy):
 
         data = json.dumps({"id": fileid, "content": content}).encode("UTF8")
         return self.api_address, data, headers
+
+    def _is_success(self, response: HTTPResponse) -> bool:
+        if not response or response.getcode() != 200:
+            return False
+
+        try:
+            return json.loads(response.read()).get("success", "false")
+        except:
+            return False
 
 
 class PushToLocal(PushTo):
@@ -390,6 +392,7 @@ class PushToGist(PushTo):
 
         self.name = "gist"
         self.api_address = "https://api.github.com/gists"
+        self.domain = "https://gist.githubusercontent.com"
         self.method = "PATCH"
 
     def validate(self, push_conf: dict) -> bool:
@@ -442,47 +445,146 @@ class PushToGist(PushTo):
         if not username or not gistid or not filename:
             return ""
 
-        prefix = f"https://gist.githubusercontent.com/{username}/{gistid}"
+        prefix = f"{self.domain}/{username}/{gistid}"
         if revision:
             return f"{prefix}/raw/{revision}/{filename}"
 
         return f"{prefix}/raw/{filename}"
 
 
-PUSHTYPE = Enum(
-    "PUSHTYPE",
-    (
-        "paste.ding.free.hr",
-        "pastefy.ga",
-        "paste.gg",
-        "imperialb.in",
-        "gist.githubusercontent.com",
-    ),
-)
+class PushToQBin(PushToPastefy):
+    """https://qbin.me"""
+
+    def __init__(self, token: str, base: str = "") -> None:
+        base = utils.trim(base).removesuffix("/") or "https://qbin.me"
+        if not isurl(base):
+            raise ValueError(f"[PushError] invalid base address for qbin: {base}")
+
+        super().__init__(token=token, base=base)
+
+        self.name = "qbin"
+        self.method = "POST"
+        self.domain = base
+        self.api_address = f"{base}/save"
+
+    def validate(self, push_conf: dict) -> bool:
+        if not push_conf or type(push_conf) != dict:
+            return False
+
+        fileid = push_conf.get("fileid", "")
+        return "" != self.token.strip() and "" != utils.trim(fileid)
+
+    def _generate_payload(self, content: str, push_conf: dict) -> tuple[str, str, dict]:
+        fileid = push_conf.get("fileid", "")
+        password = push_conf.get("password", "")
+        expire = push_conf.get("expire", 0)
+
+        headers = {
+            "Cookie": f"token={self.token}",
+            "Content-Type": "text/plain",
+            "User-Agent": utils.USER_AGENT,
+        }
+
+        if isinstance(expire, int) and expire > 0:
+            headers["x-expire"] = str(expire)
+
+        url = f"{self.api_address}/{fileid}"
+        if password:
+            url = f"{url}/{password}"
+
+        return url, content.encode("UTF8"), headers
+
+    def _is_success(self, response: HTTPResponse) -> bool:
+        if not response or response.getcode() != 200:
+            return False
+
+        try:
+            result = json.loads(response.read())
+            return result.get("status", 403) == 200
+        except:
+            return False
+
+    def filter_push(self, push_conf: dict) -> dict:
+        configs = {}
+        for k, v in push_conf.items():
+            if v.get("fileid", "") and self.token:
+                configs[k] = v
+
+        return configs
+
+    def raw_url(self, push_conf: dict) -> str:
+        if not push_conf or type(push_conf) != dict:
+            return ""
+
+        fileid = utils.trim(push_conf.get("fileid", ""))
+        password = utils.trim(push_conf.get("password", ""))
+
+        if not fileid:
+            return ""
+
+        url = f"{self.domain}/r/{fileid}"
+        if password:
+            url = f"{url}/{password}"
+
+        return url
 
 
-def get_instance(domain: str) -> PushTo:
-    def confirm_pushtype(url: str) -> int:
-        domain = utils.extract_domain(url=url, include_protocal=False)
-        for item in PUSHTYPE:
-            if domain == item.name:
-                return item.value
+SUPPORTED_ENGINES = set(["gist", "imperial", "pastefy", "pastegg", "qbin"] + [LOCAL_STORAGE])
 
-        return 0
 
-    push_type = confirm_pushtype(url=domain)
-    token = os.environ.get("PUSH_TOKEN", "").strip()
-    if push_type != 0 and not token:
+@dataclass
+class PushConfig(object):
+    # storage type
+    engine: str = ""
+
+    # storage token
+    token: str = ""
+
+    # storage base address
+    base: str = ""
+
+    # storage domain address
+    domain: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PushConfig":
+        if not data or type(data) != dict:
+            return None
+
+        engine = utils.trim(data.get("engine", ""))
+        if engine not in SUPPORTED_ENGINES:
+            return None
+
+        token = utils.trim(data.get("token", ""))
+        base = utils.trim(data.get("base", ""))
+        domain = utils.trim(data.get("domain", ""))
+
+        return cls(engine=engine, token=token, base=base, domain=domain)
+
+
+def get_instance(push_config: PushConfig) -> PushTo:
+    if not push_config or not isinstance(push_config, PushConfig):
+        raise ValueError("[PushError] invalid push config")
+
+    engine = utils.trim(push_config.engine)
+    if not engine:
+        raise ValueError(f"[PushError] unknown storge type: {engine}")
+
+    token = utils.trim(push_config.token or os.environ.get("PUSH_TOKEN", ""))
+    if engine != LOCAL_STORAGE and not token:
         raise ValueError(f"[PushError] not found 'PUSH_TOKEN' in environment variables, please check it and try again")
 
-    if push_type == 1:
-        return PushToDrift(token=token)
-    elif push_type == 2:
-        return PushToPastefy(token=token)
-    elif push_type == 3:
-        return PushToPasteGG(token=token)
-    elif push_type == 4:
-        return PushToImperial(token=token)
-    elif push_type == 5:
+    if engine == "gist":
         return PushToGist(token=token)
+
+    base, domain = utils.trim(push_config.base), utils.trim(push_config.domain)
+    if engine == "imperial":
+        return PushToImperial(token=token, base=base, domain=domain)
+    elif engine == "pastefy":
+        return PushToPastefy(token=token, base=base or domain)
+    elif engine == "pastegg":
+        return PushToPasteGG(token=token, base=base, domain=domain)
+    elif engine == "qbin":
+        return PushToQBin(token=token, base=base or domain)
+
     return PushToLocal()
